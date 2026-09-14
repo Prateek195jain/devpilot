@@ -1,0 +1,2 @@
+import javax.tools.ToolProvider;
+class CompileCore {public static void main(String[] args){int code=ToolProvider.getSystemJavaCompiler().run(null,System.out,System.err,"-d","target/core-tests","src/main/java/com/devpilot/ai/LocalRules.java","src/main/java/com/devpilot/webhook/WebhookSignature.java","src/main/java/com/devpilot/ai/DiffEvidence.java","src/main/java/com/devpilot/common/SecretRedactor.java","core-tests/CoreSmoke.java");if(code!=0)System.exit(code);}}

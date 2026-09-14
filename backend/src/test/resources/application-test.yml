@@ -1,0 +1,19 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:devpilot;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ''
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+  flyway:
+    enabled: false
+app:
+  jwt-secret: test-only-jwt-secret-at-least-thirty-two-characters
+  encryption-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  webhook-secret: test-webhook-secret-with-at-least-32-bytes
+  frontend-origin: http://localhost:5173
+  secure-cookies: false
+  worker-delay: 3600000
+  ai:
+    mode: local

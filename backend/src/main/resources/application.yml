@@ -1,0 +1,41 @@
+spring:
+  application:
+    name: devpilot
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/devpilot}
+    username: ${DATABASE_USER:devpilot}
+    password: ${DATABASE_PASSWORD}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+server:
+  port: 8080
+  error:
+    include-message: never
+  max-http-request-header-size: 16KB
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+logging:
+  structured:
+    format:
+      console: logstash
+app:
+  jwt-secret: ${JWT_SECRET}
+  encryption-key: ${ENCRYPTION_KEY}
+  webhook-secret: ${WEBHOOK_SECRET}
+  frontend-origin: ${FRONTEND_ORIGIN:http://localhost:5173}
+  secure-cookies: ${SECURE_COOKIES:false}
+  ai:
+    mode: ${AI_MODE:local}
+    api-key: ${AI_API_KEY:}
+    base-url: ${AI_BASE_URL:https://api.openai.com/v1}
+    model: ${AI_MODEL:gpt-4.1-mini}
