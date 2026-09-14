@@ -1,5 +1,8 @@
 name: Verify DevPilot
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 jobs:
   backend:
     runs-on: ubuntu-latest
