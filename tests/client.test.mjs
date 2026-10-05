@@ -7,3 +7,24 @@ test('simultaneous refresh requests share one rotation',async()=>{const c=await 
 test('validation errors retain field messages',async()=>{const c=await client();global.fetch=async()=>response(400,{message:'Validation failed',fieldErrors:['password: too short']});await assert.rejects(c.api('/repositories'),/password: too short/);});
 test('network failure is distinguished from signed-out state',async()=>{const c=await client();global.fetch=async()=>{throw new Error('network')};await assert.rejects(c.auth.restore(),/Cannot reach DevPilot/);global.fetch=async()=>response(401,{message:'Unauthorized'});assert.equal(await c.auth.restore(),null);});
 test('logout clears access token only after revocation succeeds',async()=>{const c=await client();global.fetch=async()=>response(200,{accessToken:'token',user:{id:'u'}});await c.auth.enter('login',{});global.fetch=async()=>response(204);await c.auth.logout();let authorization;global.fetch=async(url,opts)=>{authorization=opts.headers.Authorization;return response(200,{})};await c.api('/repositories');assert.equal(authorization,undefined);});
+
+test('restore network failures preserve the current access token',async()=>{
+ const c=await client();global.fetch=async()=>response(200,{accessToken:'saved',user:{id:'u'}});await c.auth.enter('login',{});
+ let refreshes=0;global.fetch=async()=>{refreshes++;throw Error('offline')};await assert.rejects(c.auth.restore());assert.equal(refreshes,1);
+ let token;global.fetch=async(url,opts)=>{token=opts.headers.Authorization;return response(200,{})};await c.api('/repositories');assert.equal(token,'Bearer saved');
+});
+test('login waits for rotating refresh and newer credentials remain authoritative',async()=>{
+ const c=await client();let finish;const calls=[];
+ global.fetch=async(url)=>{calls.push(url);if(url.endsWith('/refresh'))return new Promise(resolve=>{finish=resolve});return response(200,{accessToken:'new',user:{id:'new'}})};
+ const restoring=c.auth.restore();const login=c.auth.enter('login',{});assert.deepEqual(calls,['/api/v1/auth/refresh']);
+ finish(response(200,{accessToken:'old',user:{id:'old'}}));await restoring;await login;
+ assert.deepEqual(calls,['/api/v1/auth/refresh','/api/v1/auth/login']);let token;global.fetch=async(url,opts)=>{token=opts.headers.Authorization;return response(200,{})};await c.api('/repositories');assert.equal(token,'Bearer new');
+});
+test('login and registration failures are never automatically retried',async()=>{
+ for(const mode of ['login','register']){const c=await client();let calls=0;global.fetch=async()=>{calls++;throw Error('offline')};await assert.rejects(c.auth.enter(mode,{}));assert.equal(calls,1);}
+});
+test('duplicate sign-ins are rejected and restoration shares the active sign-in',async()=>{
+ const c=await client();let finish,calls=0;global.fetch=async()=>{calls++;return new Promise(resolve=>{finish=resolve})};
+ const login=c.auth.enter('login',{});await assert.rejects(c.auth.enter('login',{}),/already in progress/);const restore=c.auth.restore();
+ finish(response(200,{accessToken:'new',user:{id:'new'}}));await login;assert.deepEqual(await restore,{id:'new'});assert.equal(calls,1);
+});

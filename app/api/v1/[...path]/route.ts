@@ -1,6 +1,9 @@
 import type { NextRequest } from 'next/server';
 const ALLOWED=['GET','POST','PATCH','DELETE','OPTIONS'];
 async function proxy(request:NextRequest){
+ const pathname=new URL(request.url).pathname;
+ if(request.method==='POST'&&pathname==='/api/v1/auth/refresh'&&!request.cookies.get('devpilot_refresh')?.value)
+  return Response.json({message:'No active session'},{status:401,headers:{'Cache-Control':'no-store'}});
  const upstream=process.env.BACKEND_URL;
  if(!upstream)return Response.json({message:'Backend is not configured. Run the supplied Docker Compose stack, or set BACKEND_URL for this frontend.'},{status:503});
  if(!ALLOWED.includes(request.method))return new Response(null,{status:405});

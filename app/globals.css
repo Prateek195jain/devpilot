@@ -66,3 +66,45 @@
 @media(max-width:1100px){.content{padding:27px 25px 0}.page-heading h1{font-size:27px}.repo-grid,.memory-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.stats-grid{gap:10px}.stat{padding:15px}.dashboard-grid{grid-template-columns:1.2fr 1fr;gap:16px}.analysis-form{flex-wrap:wrap}.auth-story{padding:20px 35px}.auth-form-area{padding:35px}.story-content h1{font-size:37px}.settings-grid{grid-template-columns:1fr}.chat-layout{grid-template-columns:180px 1fr}}
 @media(max-width:800px){.page-heading{flex-direction:column;align-items:flex-start;gap:15px}.stats-grid{grid-template-columns:repeat(2,1fr)}.dashboard-grid{grid-template-columns:1fr}.debt-list{grid-template-columns:1fr}.auth-layout{grid-template-columns:1fr}.auth-story{display:none}.auth-form-area{min-height:100vh;padding:32px}.topbar-label{display:none}.content{padding:23px 18px 0}.topbar{padding:0 17px;height:60px}.repo-context{align-items:flex-start}.repo-context .muted{display:none}.repo-detail-banner{flex-wrap:wrap;padding:18px}.repo-detail-banner h2{overflow-wrap:anywhere}.chat-layout{grid-template-columns:1fr}.chat-history{border-right:0;border-bottom:1px solid var(--border);max-height:190px;overflow:auto}.chat-history h2{margin:17px 0 10px}.chat-history>button:not(:first-child){display:inline-block;width:auto}.chat-panel{min-height:450px}.onboarding-steps{flex-direction:column}.onboarding-steps svg{display:none}.onboarding{padding:40px 20px}.workspace-footer{gap:20px}.analysis-form input{max-width:none;flex:1}.analysis-form>div:first-child{flex-basis:100%}.table-panel td{min-width:120px}.table-panel td:first-child{min-width:220px}}
 @media(max-width:480px){.repo-grid,.memory-grid{grid-template-columns:1fr}.toolbar{flex-wrap:wrap}.page-heading h1{font-size:25px}.stat>strong{font-size:32px}.message.user{margin-left:15px}.chat-panel>header .badge{display:none}}
+
+/* Startup notices on public auth forms; credential errors keep their existing styling. */
+.auth-form .connection-status {
+  background: #fffbeb;
+  color: #78350f;
+  border: 1px solid #b45309;
+  padding: 16px;
+  gap: 10px;
+}
+.auth-form .connection-status > svg {
+  color: #92400e;
+  margin-top: 2px;
+}
+.auth-form .connection-status > div { min-width: 0; }
+.auth-form .connection-status strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+.auth-form .connection-status p {
+  color: #78350f;
+  margin-top: 6px;
+  line-height: 1.65;
+}
+.auth-form .connection-status-retry {
+  background: #92400e;
+  color: #ffffff;
+  border: 1px solid #92400e;
+  font-weight: 700;
+  min-height: 44px;
+  margin-top: 12px;
+}
+.auth-form .connection-status-retry:hover {
+  background: #78350f;
+  color: #ffffff;
+  border-color: #78350f;
+}
+.auth-form .connection-status-retry:focus-visible {
+  outline: 3px solid #78350f;
+  outline-offset: 3px;
+}
