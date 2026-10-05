@@ -10,7 +10,7 @@ export type Conversation={id:string;title:string};
 export type Message={id:string;role:string;content:string;createdAt:string};
 export type Change={ref:string;title:string;author:string;url:string;state:string};
 export type Stats={total:number;open:number;inProgress:number;resolved:number;criticalFindings:number;bySeverity:Record<string,number>;byCategory:Record<string,number>};
-let accessToken='';let refreshing:Promise<User|null>|null=null;
+let accessToken='';let sessionRevision=0;let refreshing:Promise<User|null>|null=null;let entering:Promise<User>|null=null;
 export class ApiError extends Error{constructor(public status:number,message:string){super(message)}}
 async function raw<T>(path:string,method='GET',body?:unknown):Promise<T>{
  let response:Response;
@@ -20,9 +20,31 @@ async function raw<T>(path:string,method='GET',body?:unknown):Promise<T>{
  return response.json();
 }
 export const auth={
- async restore(){if(!refreshing)refreshing=raw<{accessToken:string;user:User}>('/auth/refresh','POST').then(s=>{accessToken=s.accessToken;return s.user}).catch(e=>{accessToken='';if(e instanceof ApiError&&e.status===401)return null;throw e;}).finally(()=>{refreshing=null});return refreshing;},
- async enter(mode:string,body:unknown){const s=await raw<{accessToken:string;user:User}>('/auth/'+mode,'POST',body);accessToken=s.accessToken;return s.user;},
- async logout(){await raw('/auth/logout','POST');accessToken='';}
+ async restore(){
+  if(entering)return entering;
+  if(!refreshing){
+   const revision=sessionRevision;
+   refreshing=raw<{accessToken:string;user:User}>('/auth/refresh','POST')
+    .then(s=>{if(revision===sessionRevision)accessToken=s.accessToken;return s.user})
+    .catch(e=>{if(e instanceof ApiError&&e.status===401){if(revision===sessionRevision)accessToken='';return null;}throw e;})
+    .finally(()=>{refreshing=null});
+  }
+  return refreshing;
+ },
+ enter(mode:string,body:unknown){
+  if(entering)return Promise.reject(new ApiError(409,'A sign-in request is already in progress.'));
+  entering=(async()=>{
+  // Serialize cookie-changing requests so late refreshes cannot replace a new login cookie.
+  if(refreshing)await refreshing.catch(()=>null);
+  const revision=++sessionRevision;
+  const s=await raw<{accessToken:string;user:User}>('/auth/'+mode,'POST',body);
+  if(revision===sessionRevision)accessToken=s.accessToken;
+  return s.user;
+  })().finally(()=>{entering=null});
+  return entering;
+ },
+ async logout(){if(entering)await entering.catch(()=>null);if(refreshing)await refreshing.catch(()=>null);await raw('/auth/logout','POST');sessionRevision++;accessToken='';}
+
 };
 export async function api<T>(path:string,method='GET',body?:unknown):Promise<T>{try{return await raw<T>(path,method,body)}catch(e){if(e instanceof ApiError&&e.status===401){if(await auth.restore())return raw<T>(path,method,body);if(typeof window!=='undefined')window.dispatchEvent(new Event('devpilot:expired'));}throw e;}}
 export const repoApi=(repo:string,path:string)=>'/repositories/'+repo+path;
