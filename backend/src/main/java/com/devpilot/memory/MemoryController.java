@@ -16,9 +16,13 @@ import org.springframework.transaction.annotation.Transactional;
     }
     public record State(@NotNull @Pattern(regexp="ACTIVE|ARCHIVED")String status) {
     }
-    @GetMapping Page<EngineeringMemoryView> list(@PathVariable UUID repo,@RequestParam(defaultValue="0")int page,@RequestParam(defaultValue="30")int size) {
+    @GetMapping Page<EngineeringMemoryView> list(@PathVariable UUID repo,@RequestParam(defaultValue="0")int page,@RequestParam(defaultValue="30")int size,
+            @RequestParam(required=false)String status) {
         access.require(repo);
-        return store.findByRepositoryId(repo,Pages.of(page,size)).map(EngineeringMemoryView::of);
+        if(status!=null&&!Set.of("ACTIVE","ARCHIVED").contains(status))throw Problem.bad("Invalid memory status");
+        var pageable=Pages.of(page,size);
+        return (status==null ? store.findByRepositoryId(repo,pageable)
+                : store.findByRepositoryIdAndStatus(repo,status,pageable)).map(EngineeringMemoryView::of);
     }
     @PatchMapping("/{id}") @Transactional EngineeringMemoryView update(@PathVariable UUID repo,@PathVariable UUID id,@Valid @RequestBody State s) {
         access.require(repo);

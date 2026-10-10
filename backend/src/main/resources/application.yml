@@ -29,6 +29,17 @@ logging:
     format:
       console: logstash
 app:
+  repository-context:
+    max-chars: ${REPOSITORY_CONTEXT_MAX_CHARS:24000}
+  retrieval:
+    max-limit: ${RETRIEVAL_MAX_LIMIT:50}
+  source-chunking:
+    # UTF-16 character counts, including LF; an oversized line remains intact.
+    max-chars: ${SOURCE_CHUNKING_MAX_CHARS:4000}
+    overlap-chars: ${SOURCE_CHUNKING_OVERLAP_CHARS:400}
+  source-acquisition:
+    # Bounded to 1 MiB to fit base64 blob responses in the existing GitHub client.
+    max-file-bytes: ${SOURCE_ACQUISITION_MAX_FILE_BYTES:524288}
   jwt-secret: ${JWT_SECRET}
   encryption-key: ${ENCRYPTION_KEY}
   webhook-secret: ${WEBHOOK_SECRET}
@@ -40,3 +51,10 @@ app:
     # Blank values select the active provider's defaults; environment overrides apply to both.
     base-url: ${AI_BASE_URL:}
     model: ${AI_MODEL:}
+  embedding:
+    mode: ${EMBEDDING_MODE:disabled}
+    api-key: ${EMBEDDING_API_KEY:}
+    base-url: ${EMBEDDING_BASE_URL:https://generativelanguage.googleapis.com/v1beta}
+    model: ${EMBEDDING_MODEL:gemini-embedding-2}
+    dimensions: ${EMBEDDING_DIMENSIONS:768}
+    timeout-seconds: ${EMBEDDING_TIMEOUT_SECONDS:20}

@@ -7,7 +7,44 @@ import java.nio.charset.StandardCharsets;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.*;
 @Component public class GitHubSourceControlAdapter implements SourceControlProvider {
-    private final WebClient web=WebClient.builder().baseUrl("https://api.github.com").codecs(c->c.defaultCodecs().maxInMemorySize(2_097_152)).defaultHeader("X-GitHub-Api-Version","2022-11-28").build();
+    private final WebClient web;
+    public GitHubSourceControlAdapter() {
+        this(WebClient.builder().baseUrl("https://api.github.com").codecs(c->c.defaultCodecs().maxInMemorySize(2_097_152)).defaultHeader("X-GitHub-Api-Version","2022-11-28").build());
+    }
+    GitHubSourceControlAdapter(WebClient web) {
+        this.web=web;
+    }
+    private String sha(String value) {
+        if(value==null||!value.matches("[a-fA-F0-9]{40}"))throw Problem.bad("Expected full commit or object SHA");
+        return value.toLowerCase(Locale.ROOT);
+    }
+    public String commitTree(String token,String name,String commitSha) {
+        String expected=sha(commitSha);
+        JsonNode n=get(token,root(name)+"/git/commits/"+expected);
+        if(!expected.equals(text(n,"sha")))throw Problem.upstream("GitHub commit mismatch");
+        return sha(text(n.path("tree"),"sha"));
+    }
+    public List<TreeEntry> tree(String token,String name,String treeSha) {
+        String expected=sha(treeSha);
+        JsonNode n=get(token,root(name)+"/git/trees/"+expected);
+        if(!expected.equals(text(n,"sha"))||!n.path("tree").isArray()||!n.path("truncated").isBoolean()||n.path("truncated").asBoolean())
+            throw Problem.upstream("GitHub incomplete tree");
+        List<TreeEntry> entries=new ArrayList<>();
+        n.path("tree").forEach(e->entries.add(new TreeEntry(text(e,"path"),text(e,"type"),text(e,"mode"),sha(text(e,"sha")),e.path("size").asLong(-1))));
+        return List.copyOf(entries);
+    }
+    public byte[] blob(String token,String name,String blobSha) {
+        String expected=sha(blobSha);
+        JsonNode n=get(token,root(name)+"/git/blobs/"+expected);
+        if(!expected.equals(text(n,"sha"))||!"base64".equals(text(n,"encoding")))throw Problem.upstream("GitHub invalid blob");
+        try {
+            byte[] bytes=Base64.getDecoder().decode(text(n,"content").replace("\n","").replace("\r",""));
+            if(bytes.length!=n.path("size").asLong(-1))throw Problem.upstream("GitHub blob size mismatch");
+            return bytes;
+        } catch(IllegalArgumentException e) {
+            throw Problem.upstream("GitHub invalid blob encoding");
+        }
+    }
     private JsonNode get(String token,String path) {
         try {
             return web.get().uri(path).headers(h-> {
