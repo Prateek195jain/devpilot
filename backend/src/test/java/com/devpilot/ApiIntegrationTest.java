@@ -39,6 +39,7 @@ import static org.mockito.Mockito.*;
     @Autowired JwtDecoder jwtDecoder;
     @Autowired RefreshStore refreshTokens;
     @MockitoBean SourceControlProvider github;
+    @MockitoBean EmbeddingProvider embeddings;
     @MockitoBean AnalysisWorker worker;
     record Session(String access,String cookie,String user) {
     }
@@ -48,6 +49,11 @@ import static org.mockito.Mockito.*;
         return new Session(n.path("accessToken").asText(),r.getHeader("Set-Cookie").split(";",2)[0].split("=",2)[1],n.path("user").path("id").asText());
     }
     String repo(Session s)throws Exception {
+        when(embeddings.model()).thenReturn("test-model");
+        when(embeddings.dimensions()).thenReturn(768);
+        when(github.latestCommitSha(anyString(),anyString(),eq("main"))).thenReturn("a".repeat(40));
+        when(github.commitTree(anyString(),anyString(),eq("a".repeat(40)))).thenReturn("b".repeat(40));
+        when(github.tree(anyString(),anyString(),eq("b".repeat(40)))).thenReturn(List.of());
         when(github.login(anyString())).thenReturn("engineer");
         when(github.repository(anyString(),eq("acme/service"))).thenReturn(new SourceControlProvider.Repo(42,"acme/service","Example","main","Java"));
         when(github.readme(anyString(),anyString())).thenReturn("# Service\nSpring Boot REST API.");

@@ -16,6 +16,7 @@ public interface SourceControlProvider {
     String login(String token);
     List<Repo> repositories(String token,int page);
     Repo repository(String token,String name);
+    String latestCommitSha(String token,String name,String branch);
     List<Change> changes(String token,String name,String kind,int page);
     List<String> branches(String token,String name,int page);
     Snapshot snapshot(String token,String name,String kind,String ref);

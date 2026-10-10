@@ -10,15 +10,17 @@ import org.springframework.http.HttpStatus;
 @RestController @RequestMapping("/api/v1/repositories") public class RepositoryController {
     private final RepositoryStore store;
     private final RepositoryAccess access;
-    private final RepositoryService service;
+    private final RepositorySyncService syncService;
+    private final RepositoryRemovalService removal;
     private final IntegrationService integration;
     private final SourceControlProvider provider;
-    public RepositoryController(RepositoryStore s,RepositoryAccess a,RepositoryService v,IntegrationService i,SourceControlProvider p) {
+    public RepositoryController(RepositoryStore s,RepositoryAccess a,IntegrationService i,SourceControlProvider p,RepositorySyncService syncService,RepositoryRemovalService removal) {
         store=s;
         access=a;
-        service=v;
         integration=i;
         provider=p;
+        this.syncService=syncService;
+        this.removal=removal;
     }
     public record Import(@NotBlank @Pattern(regexp="[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+") @Size(max=200)String fullName) {
     }
@@ -26,13 +28,16 @@ import org.springframework.http.HttpStatus;
         return store.findByOwnerId(CurrentUser.id(),Pages.of(page,size)).map(TrackedRepositoryView::of);
     }
     @PostMapping @ResponseStatus(HttpStatus.CREATED) TrackedRepositoryView create(@Valid @RequestBody Import r) {
-        return service.importRepo(CurrentUser.id(),r.fullName());
+        return syncService.importRepo(r.fullName());
     }
     @GetMapping("/{id}") TrackedRepositoryView get(@PathVariable UUID id) {
         return TrackedRepositoryView.of(access.require(id));
     }
     @PostMapping("/{id}/sync") TrackedRepositoryView sync(@PathVariable UUID id) {
-        return service.sync(id);
+        return syncService.sync(id);
+    }
+    @DeleteMapping("/{id}") @ResponseStatus(HttpStatus.NO_CONTENT) void remove(@PathVariable UUID id) {
+        removal.remove(id);
     }
     @GetMapping("/{id}/changes") List<SourceControlProvider.Change> changes(@PathVariable UUID id,@RequestParam(defaultValue="PR")String kind,@RequestParam(defaultValue="1")int page) {
         if(!Set.of("PR","COMMIT").contains(kind)||page<1||page>1000)throw Problem.bad("Invalid kind or page");
