@@ -1,6 +1,7 @@
 package com.devpilot.repository;
 
 import com.devpilot.common.Problem;
+import com.devpilot.ai.EmbeddingFailure;
 import com.devpilot.common.CurrentUser;
 import com.devpilot.github.IntegrationService;
 import com.devpilot.github.SourceControlProvider;
@@ -69,6 +70,10 @@ public class RepositorySyncService {
             if (failure instanceof Problem problem
                     && (problem.status == HttpStatus.NOT_FOUND || problem.status == HttpStatus.UNAUTHORIZED
                         || problem.status == HttpStatus.FORBIDDEN)) throw problem;
+            if (failure instanceof EmbeddingFailure embedding) {
+                log.warn("Repository indexing failed after metadata sync for {} {}", repositoryId, embedding.diagnostic());
+                throw new Problem(HttpStatus.BAD_GATEWAY, "Repository indexing failed. Please retry shortly.");
+            }
             log.warn("Repository indexing failed after metadata sync for {} ({})", repositoryId,
                     failure.getClass().getSimpleName());
             throw new Problem(HttpStatus.BAD_GATEWAY, failureMessage);

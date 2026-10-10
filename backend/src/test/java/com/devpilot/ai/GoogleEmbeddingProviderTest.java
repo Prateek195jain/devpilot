@@ -19,6 +19,8 @@ class GoogleEmbeddingProviderTest {
     private String url;
     private volatile String response;
     private volatile int status = 200;
+    private final java.util.concurrent.atomic.AtomicInteger requests = new java.util.concurrent.atomic.AtomicInteger();
+    private volatile int recoverAfter = Integer.MAX_VALUE;
     private volatile long delay;
     private volatile String retryAfter;
     private final AtomicReference<Captured> captured = new AtomicReference<>();
@@ -30,6 +32,7 @@ class GoogleEmbeddingProviderTest {
         executor = Executors.newCachedThreadPool();
         server.setExecutor(executor);
         server.createContext("/", exchange -> {
+            int requestNumber = requests.incrementAndGet();
             captured.set(new Captured(exchange.getRequestMethod(), exchange.getRequestURI().toString(),
                     exchange.getRequestHeaders().getFirst("x-goog-api-key"), mapper.readTree(exchange.getRequestBody())));
             try {
@@ -37,7 +40,7 @@ class GoogleEmbeddingProviderTest {
                 byte[] bytes = response.getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().set("Content-Type", "application/json");
                 if (retryAfter != null) exchange.getResponseHeaders().set("Retry-After", retryAfter);
-                exchange.sendResponseHeaders(status, bytes.length);
+                exchange.sendResponseHeaders(requestNumber > recoverAfter ? 200 : status, bytes.length);
                 try (var out = exchange.getResponseBody()) { out.write(bytes); }
             } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             finally { exchange.close(); }
@@ -48,6 +51,50 @@ class GoogleEmbeddingProviderTest {
     @AfterEach void stop() { server.stop(0); executor.shutdownNow(); }
     private GoogleEmbeddingProvider provider() { return new GoogleEmbeddingProvider("test-only-key", url, "gemini-embedding-2", 768, 2); }
 
+
+    @ParameterizedTest @ValueSource(ints={429,503})
+    void transientDocumentFailureRetriesAndSucceeds(int code) {
+        status = code; recoverAfter = 2;
+        assertEquals(768, provider().embedDocument("file", "private source").dimensions());
+        assertEquals(3, requests.get());
+    }
+    @ParameterizedTest @ValueSource(ints={429,503})
+    void exhaustedDocumentRetriesHaveSafeDiagnostics(int code) {
+        status = code; response = "test-only-key private source";
+        var failure = assertThrows(EmbeddingFailure.class, () -> provider().embedDocument("file", "private source"));
+        assertEquals(3, requests.get()); assertEquals(3, failure.attempts()); assertEquals(code, failure.httpStatus());
+        assertTrue(failure.diagnostic().contains(code == 429 ? "category=RATE_LIMIT" : "category=PROVIDER_UNAVAILABLE"));
+        assertFalse(failure.diagnostic().contains("test-only-key")); assertFalse(failure.diagnostic().contains("private source"));
+        assertNull(failure.getCause());
+    }
+    @ParameterizedTest @ValueSource(ints={400,401,403})
+    void permanentDocumentFailureIsNotRetried(int code) {
+        status = code;
+        assertEquals(1, assertThrows(EmbeddingFailure.class, () -> provider().embedDocument("file", "source")).attempts());
+        assertEquals(1, requests.get());
+    }
+    @Test void malformedDocumentIsNotRetried() {
+        response = "not JSON";
+        assertThrows(EmbeddingFailure.class, () -> provider().embedDocument("file", "source"));
+        assertEquals(1, requests.get());
+    }
+    @Test void incorrectDimensionDocumentIsNotRetried() {
+        response = "{\"embedding\":{\"values\":[1]}}";
+        assertThrows(EmbeddingFailure.class, () -> provider().embedDocument("file", "source"));
+        assertEquals(1, requests.get());
+    }
+    @Test void documentTimeoutRetriesThreeTimes() {
+        delay = 2000;
+        var p = new GoogleEmbeddingProvider("test-only-key", url, "gemini-embedding-2", 768, 1);
+        var failure = assertThrows(EmbeddingFailure.class, () -> p.embedDocument("file", "source"));
+        assertEquals(3, failure.attempts()); assertEquals(3, requests.get());
+        assertTrue(failure.diagnostic().contains("category=TIMEOUT"));
+    }
+    @Test void documentConnectionFailureRetriesThreeTimes() {
+        server.stop(0);
+        var failure = assertThrows(EmbeddingFailure.class, () -> provider().embedDocument("file", "source"));
+        assertEquals(3, failure.attempts()); assertTrue(failure.diagnostic().contains("category=NETWORK"));
+    }
     @Test void documentAndCodeQueryFollowGoogleContractAndKeepKeyOutOfPayload() {
         var provider = provider();
         var embedding = provider.embedDocument("src/Auth.java", "class Auth {} ghp_abcdefghijklmnopqrstuvwxyz");

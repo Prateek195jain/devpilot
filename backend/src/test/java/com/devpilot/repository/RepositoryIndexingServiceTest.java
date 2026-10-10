@@ -190,20 +190,39 @@ class RepositoryIndexingServiceTest {
     }
 
     @Test void partialEmbeddingFailureLeavesNoNewIndexAndPreservesExistingIndex() {
+        EmbeddingFailure exhausted = exhaustedGoogleFailure();
+        assertEquals(3, exhausted.attempts());
         when(embeddings.embedDocument(anyString(), anyString()))
                 .thenReturn(embedding("test-model", 768, 768, 0.25))
-                .thenThrow(new EmbeddingFailure(EmbeddingFailure.Kind.RATE_LIMIT));
+                .thenThrow(exhausted);
         assertThrows(EmbeddingFailure.class, () -> service.index(repositoryId, COMMIT));
         assertTrue(stored(COMMIT).isEmpty());
+        assertNull(indexedCommit());
         doReturn(embedding("test-model", 768, 768, 0.25)).when(embeddings).embedDocument(anyString(), anyString());
         service.index(repositoryId, COMMIT);
         var ids = stored(COMMIT).stream().map(c -> c.id).toList();
         when(embeddings.embedDocument(anyString(), anyString()))
                 .thenReturn(embedding("test-model", 768, 768, 0.5))
-                .thenThrow(new EmbeddingFailure(EmbeddingFailure.Kind.TEMPORARY));
+                .thenThrow(exhausted);
         assertThrows(EmbeddingFailure.class, () -> service.index(repositoryId, COMMIT));
         assertEquals(ids, stored(COMMIT).stream().map(c -> c.id).toList());
         assertEquals(COMMIT,indexedCommit());
+    }
+    private EmbeddingFailure exhaustedGoogleFailure() {
+        try {
+            var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/", exchange -> {
+                exchange.getRequestBody().readAllBytes();
+                exchange.sendResponseHeaders(503, -1);
+                exchange.close();
+            });
+            server.start();
+            try {
+                var google = new GoogleEmbeddingProvider("test-key", "http://127.0.0.1:" + server.getAddress().getPort(),
+                        "gemini-embedding-2", 768, 2);
+                return assertThrows(EmbeddingFailure.class, () -> google.embedDocument("file", "source"));
+            } finally { server.stop(0); }
+        } catch (java.io.IOException e) { throw new AssertionError(e); }
     }
 
     @ParameterizedTest @ValueSource(ints = {0, 767, 769})

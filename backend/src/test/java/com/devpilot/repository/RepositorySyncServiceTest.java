@@ -33,6 +33,26 @@ import static org.mockito.Mockito.*;
         RepositorySourceChunker.class, SourceFilePolicy.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class RepositorySyncServiceTest {
+    @Test void importEmbeddingFailureReturnsSafeRetryMessageAndKeepsMetadata() {
+        prepareImport();
+        when(embeddings.embedDocument(anyString(), anyString()))
+                .thenThrow(new com.devpilot.ai.EmbeddingFailure(com.devpilot.ai.EmbeddingFailure.Kind.RATE_LIMIT));
+        Problem failure = assertThrows(Problem.class, () -> sync.importRepo("test/sync"));
+        assertEquals(HttpStatus.BAD_GATEWAY, failure.status);
+        assertEquals("Repository indexing failed. Please retry shortly.", failure.getMessage());
+        assertMetadata();
+        assertNull(stored().latestIndexedCommitSha);
+        assertEquals(0, chunks.count());
+    }
+    @Test void syncEmbeddingFailureReturnsSafeRetryMessage() {
+        doThrow(new com.devpilot.ai.EmbeddingFailure(com.devpilot.ai.EmbeddingFailure.Kind.RATE_LIMIT))
+                .when(indexing).index(repositoryId, COMMIT);
+        Problem failure = assertThrows(Problem.class, () -> sync.sync(repositoryId));
+        assertEquals(HttpStatus.BAD_GATEWAY, failure.status);
+        assertEquals("Repository indexing failed. Please retry shortly.", failure.getMessage());
+        assertMetadata();
+        assertNull(stored().latestIndexedCommitSha);
+    }
     private static final String COMMIT = "a".repeat(40), NEXT = "b".repeat(40);
     @Autowired RepositorySyncService sync;
     @Autowired RepositoryService metadata;

@@ -57,46 +57,77 @@ public class GoogleEmbeddingProvider implements EmbeddingProvider {
     public String model() { return model; }
     public int dimensions() { return dimensions; }
     public Embedding embedDocument(String title, String content) {
-        return embed("title: " + (title == null || title.isBlank() ? "none" : title) + " | text: " + input(content));
+        return embed("title: " + (title == null || title.isBlank() ? "none" : title) + " | text: " + input(content), 3);
     }
     public Embedding embedQuery(String query) {
-        return embed("task: code retrieval | query: " + input(query));
+        return embed("task: code retrieval | query: " + input(query), 1);
     }
     private String input(String text) {
         if (text == null || text.isBlank()) throw new EmbeddingFailure(EmbeddingFailure.Kind.INVALID_REQUEST);
         return text;
     }
-    private Embedding embed(String text) {
+    private Embedding embed(String text, int maxAttempts) {
         if (key == null || key.isBlank()) throw new EmbeddingFailure(EmbeddingFailure.Kind.CONFIGURATION);
         // Conservative payload bound; tokenizer-aware chunking belongs to the source indexing phase.
         if (text.length() > 24000) throw new EmbeddingFailure(EmbeddingFailure.Kind.INVALID_REQUEST);
         Map<String, Object> body = Map.of("model", "models/" + model,
                 "content", Map.of("parts", List.of(Map.of("text", SecretRedactor.clean(text)))),
                 "outputDimensionality", dimensions);
+        for (int attempt = 1; ; attempt++) {
+            try { return request(body); }
+            catch (EmbeddingFailure failure) {
+                if (!failure.retryable() || attempt >= maxAttempts || Thread.currentThread().isInterrupted())
+                    throw failure.withAttempts(attempt);
+                try { Thread.sleep(250L << (attempt - 1)); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw failure.withAttempts(attempt);
+                }
+            }
+        }
+    }
+    private Embedding request(Map<String, Object> body) {
         try {
             JsonNode response = client.post().uri(endpoint).header("x-goog-api-key", key)
                     .contentType(MediaType.APPLICATION_JSON).bodyValue(body).exchangeToMono(r -> {
                         if (r.statusCode().value() == 200) return r.bodyToMono(JsonNode.class)
-                                .onErrorMap(e -> new EmbeddingFailure(
-                                        e instanceof org.springframework.core.codec.DecodingException
-                                                || e instanceof org.springframework.core.io.buffer.DataBufferLimitException
-                                                ? EmbeddingFailure.Kind.INVALID_RESPONSE : EmbeddingFailure.Kind.TEMPORARY));
+                                .onErrorMap(GoogleEmbeddingProvider::transportFailure);
                         int status = r.statusCode().value();
                         var kind = status == 401 || status == 403 ? EmbeddingFailure.Kind.AUTHENTICATION
                                 : status == 429 ? EmbeddingFailure.Kind.RATE_LIMIT
                                 : status >= 500 || status == 408 ? EmbeddingFailure.Kind.TEMPORARY
                                 : EmbeddingFailure.Kind.INVALID_REQUEST;
                         Long delay = retryAfter(r.headers().asHttpHeaders().getFirst("Retry-After"));
-                        return r.releaseBody().then(Mono.<JsonNode>error(new EmbeddingFailure(kind, delay)));
+                        return r.releaseBody().then(Mono.<JsonNode>error(new EmbeddingFailure(kind, delay, status, 1,
+                                status == 408 ? "TIMEOUT" : status >= 500 ? "PROVIDER_UNAVAILABLE" : kind.name())));
                     }).timeout(timeout).block();
             return validate(response);
         } catch (EmbeddingFailure e) { throw e; }
-        catch (RuntimeException e) { throw new EmbeddingFailure(EmbeddingFailure.Kind.TEMPORARY); }
+        catch (RuntimeException e) { throw transportFailure(e); }
+    }
+    private static EmbeddingFailure transportFailure(Throwable error) {
+        if (error instanceof EmbeddingFailure failure) return failure;
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (cause instanceof org.springframework.core.codec.DecodingException
+                    || cause instanceof org.springframework.core.io.buffer.DataBufferLimitException)
+                return new EmbeddingFailure(EmbeddingFailure.Kind.INVALID_RESPONSE);
+            if (cause instanceof java.util.concurrent.TimeoutException
+                    || cause instanceof java.net.SocketTimeoutException
+                    || cause instanceof io.netty.handler.timeout.TimeoutException)
+                return new EmbeddingFailure(EmbeddingFailure.Kind.TEMPORARY, null, null, 1, "TIMEOUT");
+            if (cause instanceof javax.net.ssl.SSLException)
+                return new EmbeddingFailure(EmbeddingFailure.Kind.CONFIGURATION);
+            if (cause instanceof java.io.IOException)
+                return new EmbeddingFailure(EmbeddingFailure.Kind.TEMPORARY, null, null, 1, "NETWORK");
+        }
+        return new EmbeddingFailure(EmbeddingFailure.Kind.CONFIGURATION);
     }
     private Embedding validate(JsonNode response) {
         JsonNode values = response == null ? null : response.path("embedding").path("values");
-        if (response == null || response.has("error") || values == null || !values.isArray() || values.size() != dimensions)
+        if (response == null || response.has("error") || values == null || !values.isArray())
             throw new EmbeddingFailure(EmbeddingFailure.Kind.INVALID_RESPONSE);
+        if (values.size() != dimensions)
+            throw new EmbeddingFailure(EmbeddingFailure.Kind.INVALID_RESPONSE, null, null, 1, "DIMENSION_MISMATCH");
         List<Double> vector = new ArrayList<>(dimensions);
         double norm = 0;
         for (JsonNode value : values) {
