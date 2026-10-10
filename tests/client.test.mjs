@@ -5,7 +5,7 @@ test('access tokens are sent to same-origin API, and never persisted',async()=>{
 test('expired access token refreshes and retries once',async()=>{const c=await client();let apiCalls=0;let refreshes=0;global.fetch=async(url)=>{if(url.endsWith('/refresh')){refreshes++;return response(200,{accessToken:'new',user:{id:'u'}})}return ++apiCalls===1?response(401,{message:'expired'}):response(200,{ok:true})};assert.deepEqual(await c.api('/repositories'),{ok:true});assert.equal(refreshes,1);assert.equal(apiCalls,2);});
 test('simultaneous refresh requests share one rotation',async()=>{const c=await client();let calls=0;global.fetch=async()=>{calls++;return response(200,{accessToken:'new',user:{id:'u'}})};await Promise.all([c.auth.restore(),c.auth.restore()]);assert.equal(calls,1);});
 test('validation errors retain field messages',async()=>{const c=await client();global.fetch=async()=>response(400,{message:'Validation failed',fieldErrors:['password: too short']});await assert.rejects(c.api('/repositories'),/password: too short/);});
-test('network failure is distinguished from signed-out state',async()=>{const c=await client();global.fetch=async()=>{throw new Error('network')};await assert.rejects(c.auth.restore(),/Cannot reach DevPilot/);global.fetch=async()=>response(401,{message:'Unauthorized'});assert.equal(await c.auth.restore(),null);});
+test('network failure is distinguished from signed-out state',async()=>{const c=await client();global.fetch=async()=>{throw new Error('network')};await assert.rejects(c.auth.restore(),/Backend is unavailable/);global.fetch=async()=>response(401,{message:'Unauthorized'});assert.equal(await c.auth.restore(),null);});
 test('logout clears access token only after revocation succeeds',async()=>{const c=await client();global.fetch=async()=>response(200,{accessToken:'token',user:{id:'u'}});await c.auth.enter('login',{});global.fetch=async()=>response(204);await c.auth.logout();let authorization;global.fetch=async(url,opts)=>{authorization=opts.headers.Authorization;return response(200,{})};await c.api('/repositories');assert.equal(authorization,undefined);});
 
 test('restore network failures preserve the current access token',async()=>{
@@ -256,3 +256,15 @@ test('successful sign-in starts a new session after definitive refresh rejection
  let bearer;global.fetch=async(url,opts)=>{bearer=opts.headers.Authorization;return response(200,{});};
  await c.api('/repositories');assert.equal(bearer,'Bearer new-login');
 });
+
+for(const path of ['/repositories','/repositories/r/sync']) {
+ test('Import/Sync error classification and success: '+path,async()=>{
+  const c=await client();global.fetch=async()=>response(502,{message:'Repository indexing failed. Please retry shortly.'});
+  await assert.rejects(c.api(path,'POST',{}),e=>e.status===502&&e.message==='Repository indexing failed. Please retry shortly.');
+  global.fetch=async()=>response(502,{status:502,error:'BAD_GATEWAY'});await assert.rejects(c.api(path,'POST',{}),/Repository indexing failed/);
+  global.fetch=async()=>response(500,{message:'Safe application failure'});await assert.rejects(c.api(path,'POST',{}),/Safe application failure/);
+  global.fetch=async()=>{throw Error('offline')};await assert.rejects(c.api(path,'POST',{}),/Backend is unavailable/);
+  global.fetch=async()=>new Response('<html>Bad gateway</html>',{status:502});await assert.rejects(c.api(path,'POST',{}),/Backend is unavailable/);
+  global.fetch=async()=>response(200,{id:'r'});assert.deepEqual(await c.api(path,'POST',{}),{id:'r'});
+ });
+}

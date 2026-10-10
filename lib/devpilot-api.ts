@@ -18,8 +18,17 @@ export class ApiError extends Error{constructor(public status:number,message:str
 async function raw<T>(path:string,method='GET',body?:unknown):Promise<T>{
  let response:Response;
  // Cookie/password auth must not be rejected by the JWT filter for an expired bearer.
- try{response=await fetch('/api/v1'+path,{method,credentials:'same-origin',headers:{'Content-Type':'application/json',...(!isAuthPath(path)&&accessToken?{Authorization:'Bearer '+accessToken}:{})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(90000)});}catch{throw new ApiError(0,'Cannot reach DevPilot. Check that the backend is running.');}
- if(!response.ok){const error=await response.json().catch(()=>({})) as {message?:string;fieldErrors?:string[]};throw new ApiError(response.status,[error.message||'Request failed',...(error.fieldErrors||[])].join(' · '));}
+ try{response=await fetch('/api/v1'+path,{method,credentials:'same-origin',headers:{'Content-Type':'application/json',...(!isAuthPath(path)&&accessToken?{Authorization:'Bearer '+accessToken}:{})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(90000)});}catch{throw new ApiError(0,'Backend is unavailable. Check the Java service and database.');}
+ if(!response.ok){
+  const payload:unknown=await response.json().catch(()=>null);
+  const error=payload&&typeof payload==='object'?payload as {message?:unknown;fieldErrors?:unknown;status?:unknown;error?:unknown}:null;
+  const message=typeof error?.message==='string'&&error.message.trim()?error.message:null;
+  const applicationError=message!==null||(typeof error?.status==='number'&&typeof error?.error==='string');
+  const indexingOperation=method==='POST'&&/^\/repositories(?:\?|$|\/[^/]+\/sync(?:\?|$))/.test(path);
+  const fallback=!applicationError&&[502,503,504].includes(response.status)?'Backend is unavailable. Check the Java service and database.':indexingOperation&&response.status===502?'Repository indexing failed. Please retry shortly.':'Request failed';
+  const fields=Array.isArray(error?.fieldErrors)?error.fieldErrors.filter((field):field is string=>typeof field==='string'):[];
+  throw new ApiError(response.status,[message||fallback,...fields].join(' · '));
+ }
  if(response.status===204)return undefined as T;
  return response.json();
 }
