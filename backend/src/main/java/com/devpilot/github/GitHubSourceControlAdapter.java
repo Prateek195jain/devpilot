@@ -45,9 +45,9 @@ import org.springframework.web.reactive.function.client.*;
             throw Problem.upstream("GitHub invalid blob encoding");
         }
     }
-    private JsonNode get(String token,String path) {
+    private JsonNode get(String token,String path,Object... variables) {
         try {
-            return web.get().uri(path).headers(h-> {
+            return web.get().uri(path,variables).headers(h-> {
                 h.setBearerAuth(token);h.set("Accept","application/vnd.github+json");
             }
             ).retrieve().bodyToMono(JsonNode.class).timeout(Duration.ofSeconds(20)).block();
@@ -76,6 +76,13 @@ import org.springframework.web.reactive.function.client.*;
     }
     public Repo repository(String t,String name) {
         return repo(get(t,root(name)));
+    }
+    public String latestCommitSha(String token,String name,String branch) {
+        if(branch==null||branch.isBlank())throw Problem.upstream("GitHub default branch unavailable");
+        JsonNode commit=get(token,root(name)+"/commits/{branch}",branch);
+        String value=text(commit,"sha");
+        if(!value.matches("[a-fA-F0-9]{40}"))throw Problem.upstream("GitHub invalid commit SHA");
+        return value.toLowerCase(Locale.ROOT);
     }
     public List<String> branches(String t,String name,int page) {
         List<String> out=new ArrayList<>();
