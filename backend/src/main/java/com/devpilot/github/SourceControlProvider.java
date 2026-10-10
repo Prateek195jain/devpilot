@@ -1,6 +1,10 @@
 package com.devpilot.github;
 import java.util.*;
 public interface SourceControlProvider {
+    record TreeEntry(String path, String type, String mode, String sha, long size) {}
+    String commitTree(String token, String name, String commitSha);
+    List<TreeEntry> tree(String token, String name, String treeSha);
+    byte[] blob(String token, String name, String blobSha);
     record Repo(long id,String fullName,String description,String defaultBranch,String language) {
     }
     record Change(String ref,String title,String author,String url,String state) {

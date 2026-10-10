@@ -132,3 +132,38 @@ test('ready form enables submission and session warnings are not credential erro
  const html=await renderPublic('/login',{phase:'ready',user:null,sessionMessage:'Session restoration could not finish.'});
  assert.match(html,/role="status"/);assert.match(html,/Session restoration could not finish/);assert.doesNotMatch(html,/disabled=""/);assert.doesNotMatch(html,/role="alert"/);
 });
+
+test('startup restoration and runtime renewal keep the store authenticated until the refresh session is rejected',async()=>{
+ const c=await load('../lib/devpilot-api.ts');
+ const {createStartup}=await startupModule();
+ const previous=global.window;const target=new EventTarget();global.window=target;
+ let restorations=0,invalid=false;
+ global.fetch=async(url,opts)=>{
+  if(url.endsWith('/refresh')){
+   assert.equal(opts.headers.Authorization,undefined);
+   restorations++;
+   return invalid?Response.json({message:'Session expired'},{status:401}):Response.json({accessToken:'token-'+restorations,user:{id:'saved',name:'Developer'}});
+  }
+  return opts.headers.Authorization==='Bearer token-1'||invalid?Response.json({message:'expired'},{status:401}):Response.json({ok:true});
+ };
+ const store=createStartup({wait:async()=>{},restore:()=>c.auth.restore()});
+ const expire=()=>store.setUser(null);
+ target.addEventListener('devpilot:expired',expire);
+ const off=store.subscribe(()=>{});
+ try{
+  await flush();
+  assert.equal(store.getSnapshot().user.id,'saved');
+  assert.equal(restorations,1);
+  assert.deepEqual(await c.api('/repositories'),{ok:true});
+  assert.equal(restorations,2);
+  assert.equal(store.getSnapshot().user.id,'saved');
+  assert.equal(store.getSnapshot().sessionMessage,'');
+  invalid=true;
+  await assert.rejects(c.api('/repositories'),e=>e.status===401);
+  assert.equal(store.getSnapshot().user,null);
+  assert.equal(restorations,3);
+ }finally{
+  off();target.removeEventListener('devpilot:expired',expire);
+  if(previous===undefined)delete global.window;else global.window=previous;
+ }
+});

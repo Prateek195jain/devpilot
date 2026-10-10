@@ -20,7 +20,8 @@ import org.springframework.http.HttpStatus;
     }
     public record NewConversation(@NotBlank @Size(max=200)String title) {
     }
-    public record Send(@NotBlank @Size(max=4000)String content) {
+    public record Send(@NotBlank @Size(max=4000)String content,
+            @Pattern(regexp="[a-fA-F0-9]{40}")String commitSha) {
     }
     @GetMapping Page<ConversationView> list(@PathVariable UUID repo,@RequestParam(defaultValue="0")int page,@RequestParam(defaultValue="30")int size) {
         access.require(repo);
@@ -40,6 +41,6 @@ import org.springframework.http.HttpStatus;
     }
     @PostMapping("/{id}/messages") List<ChatMessageView> send(@PathVariable UUID repo,@PathVariable UUID id,@Valid @RequestBody Send r) {
         access.require(repo);
-        return service.send(repo,id,r.content());
+        return service.send(repo,id,r.content(),r.commitSha());
     }
 }

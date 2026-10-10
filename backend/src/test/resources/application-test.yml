@@ -4,6 +4,7 @@ spring:
     username: sa
     password: ''
   jpa:
+    database-platform: com.devpilot.repository.H2VectorDialect
     hibernate:
       ddl-auto: create-drop
   flyway:

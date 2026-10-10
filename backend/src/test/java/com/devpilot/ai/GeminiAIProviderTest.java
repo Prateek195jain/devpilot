@@ -119,6 +119,24 @@ class GeminiAIProviderTest {
         assertEquals("/v1beta/openai/chat/completions",captured.get().path());
     }
 
+    @Test void chatOutboundMessagesUseBoundedSeparatedRepositoryPrompt() {
+        response="answer";
+        String evidence="[Source: src/A.java | chunk=0]\n"+"c".repeat(23900);
+        String question="q".repeat(4000);
+        provider("","model").answer(evidence,List.of(new AIProvider.Turn("user","old".repeat(10000)),
+                new AIProvider.Turn("assistant","recent")),question);
+        JsonNode messages=captured.get().body().path("messages");
+        assertEquals("system",messages.get(0).path("role").asText());
+        assertEquals("user",messages.get(1).path("role").asText());
+        String system=messages.get(0).path("content").asText();
+        String user=messages.get(1).path("content").asText();
+        assertTrue(system.length()+user.length()<=35000);
+        assertTrue(user.contains(evidence));
+        assertTrue(user.contains("CONVERSATION HISTORY (oldest to newest):\nassistant:\nrecent"));
+        assertFalse(user.contains("oldold"));
+        assertTrue(user.endsWith(question));
+    }
+
     @Test void providerSelectionDefaultsToLocalAndHonorsEachMode() {
         var runner=new ApplicationContextRunner()
                 .withBean(ObjectMapper.class,()->mapper)

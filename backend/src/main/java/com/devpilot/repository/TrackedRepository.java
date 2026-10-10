@@ -12,4 +12,5 @@ import com.devpilot.common.BaseEntity;
     @Column(name="language",length=100) public String language;
     @Column(name="readme",columnDefinition="text") public String readme;
     @Column(name="synced_at") public Instant syncedAt;
+    @Column(name="latest_indexed_commit_sha",length=40) public String latestIndexedCommitSha;
 }

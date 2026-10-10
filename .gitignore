@@ -50,3 +50,7 @@ backend/target/
 *.class
 *.tsbuildinfo
 *.zip
+
+# local IDE settings
+/.vscode/
+/backend/.idea/

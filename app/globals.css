@@ -108,3 +108,19 @@
   outline: 3px solid #78350f;
   outline-offset: 3px;
 }
+.message-sources{margin-top:12px;padding-top:10px;border-top:1px solid #e4ebdb;color:#75836d;font-size:12px;line-height:1.6}
+.message-sources>span{font-weight:600}
+.message-sources ul{list-style:none;margin:4px 0 0;padding:0}
+.message-sources li{overflow-wrap:anywhere}
+.message-sources code{font:11px/1.6 ui-monospace,monospace}
+.message-pending p{display:flex;align-items:center;gap:9px;color:#75836d}
+.thinking-dots{display:inline-flex;gap:3px;flex-shrink:0}
+.thinking-dots>span{width:4px;height:4px;border-radius:50%;background:currentColor;animation:chat-thinking 1.4s ease-in-out infinite}
+.thinking-dots>span:nth-child(2){animation-delay:.2s}
+.thinking-dots>span:nth-child(3){animation-delay:.4s}
+@keyframes chat-thinking{0%,80%,100%{opacity:.35}40%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.thinking-dots>span{animation:none;opacity:.7}}
+.chat-pagination{border:0;padding:0;margin:0;min-width:0}
+.chat-compose textarea[aria-disabled=true],.chat-history>button:disabled{opacity:.6}
+.chat-panel>header>strong{min-width:0;overflow-wrap:anywhere}
+.memory-card{min-width:0}.memory-card h2{min-width:0;overflow-wrap:anywhere}
