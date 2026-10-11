@@ -110,6 +110,7 @@ function chatHarness() {
     });
     const { Chat } = compileScreen('../components/devpilot/screens/Chat.tsx', {
         react: hooks,
+        '../indexing-status': { IndexingStatus: () => null },
         '../chat-message': { ChatMessage, ChatPendingReply },
         '@/components/ui/button': { Button }, '@/components/ui/textarea': { Textarea },
         '@/lib/devpilot-api': {

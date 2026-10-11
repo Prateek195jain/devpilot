@@ -29,6 +29,10 @@ logging:
     format:
       console: logstash
 app:
+  indexing:
+    workers: ${INDEXING_WORKERS:1}
+    poll-ms: ${INDEXING_POLL_MS:2000}
+    lease-seconds: ${INDEXING_LEASE_SECONDS:300}
   repository-context:
     max-chars: ${REPOSITORY_CONTEXT_MAX_CHARS:24000}
   retrieval:
@@ -52,6 +56,12 @@ app:
     base-url: ${AI_BASE_URL:}
     model: ${AI_MODEL:}
   embedding:
+    concurrency: ${EMBEDDING_CONCURRENCY:1}
+    min-interval-ms: ${EMBEDDING_MIN_INTERVAL_MS:1000}
+    max-attempts: ${EMBEDDING_MAX_ATTEMPTS:3}
+    rate-limit-backoff-ms: ${EMBEDDING_RATE_LIMIT_BACKOFF_MS:2000}
+    transient-backoff-ms: ${EMBEDDING_TRANSIENT_BACKOFF_MS:250}
+    max-backoff-ms: ${EMBEDDING_MAX_BACKOFF_MS:60000}
     mode: ${EMBEDDING_MODE:disabled}
     api-key: ${EMBEDDING_API_KEY:}
     base-url: ${EMBEDDING_BASE_URL:https://generativelanguage.googleapis.com/v1beta}

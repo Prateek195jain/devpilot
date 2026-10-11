@@ -25,12 +25,18 @@ public class GoogleEmbeddingProvider implements EmbeddingProvider {
     private final String model;
     private final int dimensions;
     private final Duration timeout;
+    private final EmbeddingPacing pacing;
 
+    public GoogleEmbeddingProvider(String key,String url,String model,int dimensions,int timeoutSeconds) {
+        this(key,url,model,dimensions,timeoutSeconds,EmbeddingPacing.defaults());
+    }
+    @org.springframework.beans.factory.annotation.Autowired
     public GoogleEmbeddingProvider(@Value("${app.embedding.api-key:}") String key,
             @Value("${app.embedding.base-url:https://generativelanguage.googleapis.com/v1beta}") String url,
             @Value("${app.embedding.model:gemini-embedding-2}") String model,
             @Value("${app.embedding.dimensions:768}") int dimensions,
-            @Value("${app.embedding.timeout-seconds:20}") int timeoutSeconds) {
+            @Value("${app.embedding.timeout-seconds:20}") int timeoutSeconds, EmbeddingPacing pacing) {
+        this.pacing=pacing;
         // Configuration checks are local; credentials are checked at use, never during readiness.
         URI base;
         try { base = URI.create(url); }
@@ -57,34 +63,23 @@ public class GoogleEmbeddingProvider implements EmbeddingProvider {
     public String model() { return model; }
     public int dimensions() { return dimensions; }
     public Embedding embedDocument(String title, String content) {
-        return embed("title: " + (title == null || title.isBlank() ? "none" : title) + " | text: " + input(content), 3);
+        return embed("title: " + (title == null || title.isBlank() ? "none" : title) + " | text: " + input(content), true);
     }
     public Embedding embedQuery(String query) {
-        return embed("task: code retrieval | query: " + input(query), 1);
+        return embed("task: code retrieval | query: " + input(query), false);
     }
     private String input(String text) {
         if (text == null || text.isBlank()) throw new EmbeddingFailure(EmbeddingFailure.Kind.INVALID_REQUEST);
         return text;
     }
-    private Embedding embed(String text, int maxAttempts) {
+    private Embedding embed(String text, boolean document) {
         if (key == null || key.isBlank()) throw new EmbeddingFailure(EmbeddingFailure.Kind.CONFIGURATION);
         // Conservative payload bound; tokenizer-aware chunking belongs to the source indexing phase.
         if (text.length() > 24000) throw new EmbeddingFailure(EmbeddingFailure.Kind.INVALID_REQUEST);
         Map<String, Object> body = Map.of("model", "models/" + model,
                 "content", Map.of("parts", List.of(Map.of("text", SecretRedactor.clean(text)))),
                 "outputDimensionality", dimensions);
-        for (int attempt = 1; ; attempt++) {
-            try { return request(body); }
-            catch (EmbeddingFailure failure) {
-                if (!failure.retryable() || attempt >= maxAttempts || Thread.currentThread().isInterrupted())
-                    throw failure.withAttempts(attempt);
-                try { Thread.sleep(250L << (attempt - 1)); }
-                catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw failure.withAttempts(attempt);
-                }
-            }
-        }
+        return document?pacing.execute(() -> request(body)):request(body);
     }
     private Embedding request(Map<String, Object> body) {
         try {

@@ -49,7 +49,7 @@ class GoogleEmbeddingProviderTest {
         url = "http://127.0.0.1:" + server.getAddress().getPort() + "/v1beta";
     }
     @AfterEach void stop() { server.stop(0); executor.shutdownNow(); }
-    private GoogleEmbeddingProvider provider() { return new GoogleEmbeddingProvider("test-only-key", url, "gemini-embedding-2", 768, 2); }
+    private GoogleEmbeddingProvider provider() { return new GoogleEmbeddingProvider("test-only-key", url, "gemini-embedding-2", 768, 2, new EmbeddingPacing(1,0,3,1,1,5)); }
 
 
     @ParameterizedTest @ValueSource(ints={429,503})
@@ -85,7 +85,7 @@ class GoogleEmbeddingProviderTest {
     }
     @Test void documentTimeoutRetriesThreeTimes() {
         delay = 2000;
-        var p = new GoogleEmbeddingProvider("test-only-key", url, "gemini-embedding-2", 768, 1);
+        var p = new GoogleEmbeddingProvider("test-only-key", url, "gemini-embedding-2", 768, 1, new EmbeddingPacing(1,0,3,1,1,5));
         var failure = assertThrows(EmbeddingFailure.class, () -> p.embedDocument("file", "source"));
         assertEquals(3, failure.attempts()); assertEquals(3, requests.get());
         assertTrue(failure.diagnostic().contains("category=TIMEOUT"));
@@ -94,6 +94,12 @@ class GoogleEmbeddingProviderTest {
         server.stop(0);
         var failure = assertThrows(EmbeddingFailure.class, () -> provider().embedDocument("file", "source"));
         assertEquals(3, failure.attempts()); assertTrue(failure.diagnostic().contains("category=NETWORK"));
+    }
+    @Test void retryAfterDelaysDocumentRetry() {
+        status=429; recoverAfter=1; retryAfter="1";
+        var p=new GoogleEmbeddingProvider("test-only-key",url,"gemini-embedding-2",768,2,new EmbeddingPacing(1,0,2,1,1,1500));
+        long start=System.nanoTime(); p.embedDocument("file","source");
+        assertEquals(2,requests.get()); assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)>=1000);
     }
     @Test void documentAndCodeQueryFollowGoogleContractAndKeepKeyOutOfPayload() {
         var provider = provider();
@@ -187,7 +193,7 @@ class GoogleEmbeddingProviderTest {
         assertNull(captured.get());
     }
     @Test void selectionIsIndependentAndStartupMakesNoProviderCall() {
-        var runner = new ApplicationContextRunner().withUserConfiguration(GoogleEmbeddingProvider.class, LocalAIProvider.class);
+        var runner = new ApplicationContextRunner().withUserConfiguration(GoogleEmbeddingProvider.class, LocalAIProvider.class, EmbeddingPacing.class);
         runner.run(ctx -> assertTrue(ctx.getBeansOfType(EmbeddingProvider.class).isEmpty()));
         runner.withPropertyValues("app.embedding.mode=google", "app.embedding.base-url=" + url,
                 "app.ai.model=unchanged-generation-model").run(ctx -> {

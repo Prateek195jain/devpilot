@@ -128,7 +128,7 @@ class RepositoryChatSmokeIT {
     @EnableJpaRepositories(basePackageClasses = {RepositoryStore.class, ConversationStore.class,
             AnalysisStore.class, MemoryStore.class})
     @Import({RepositoryAccess.class, RepositoryRetrievalService.class, ConversationService.class,
-            ContextService.class, GoogleEmbeddingProvider.class, OpenAIProvider.class, GeminiAIProvider.class})
+            ContextService.class, GoogleEmbeddingProvider.class, EmbeddingPacing.class, OpenAIProvider.class, GeminiAIProvider.class})
     static class SmokeConfiguration {
         @Bean
         RecordingContextBuilder repositoryContextBuilder(RepositoryRetrievalService retrieval,

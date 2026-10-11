@@ -8,4 +8,6 @@ public interface RepositoryStore extends JpaRepository<TrackedRepository,UUID> {
     Optional<TrackedRepository> findByIdAndOwnerId(UUID id,UUID ownerId);
     List<TrackedRepository> findByGithubId(Long githubId);
     @Lock(LockModeType.PESSIMISTIC_WRITE) @Query("select r from TrackedRepository r where r.id=:id") Optional<TrackedRepository> lock(UUID id);
+    @Query("select r.id from TrackedRepository r where r.indexingStatus=com.devpilot.repository.IndexingStatus.INDEXING and (r.indexingJobToken is null or r.indexingLeaseUntil<:now) order by r.syncedAt asc, r.id asc")
+    List<UUID> pendingIndexJobs(java.time.Instant now, Pageable pageable);
 }

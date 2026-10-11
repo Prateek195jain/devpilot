@@ -19,6 +19,7 @@ public class RepositoryChunkSearchImpl implements RepositoryChunkSearch {
                 join repositories r on r.id = c.repository_id
                 where c.repository_id = ? and r.owner_id = ?
                   and c.commit_sha = ? and c.embedding_model = ?
+                  and c.published = true
                   and vector_norm(c.embedding) > 0
                 order by distance asc, c.source_path collate "C" asc, c.chunk_index asc
                 limit ?

@@ -21,6 +21,7 @@ public final class EmbeddingFailure extends RuntimeException {
         this.attempts = attempts;
         this.category = category;
     }
+    public String category() { return category; }
     public int attempts() { return attempts; }
     public Integer httpStatus() { return httpStatus; }
     public String diagnostic() {

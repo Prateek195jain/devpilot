@@ -26,6 +26,8 @@ public class RepositorySourceChunker {
         this.overlapChars = overlapChars;
     }
 
+    public String configurationKey() { return "lines-v1:" + maxChars + ":" + overlapChars; }
+
     public List<SourceChunk> chunk(RepositorySources sources) {
         Objects.requireNonNull(sources, "Repository sources are required");
         if (sources.repositoryId() == null || sources.commitSha() == null
