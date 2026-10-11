@@ -27,6 +27,11 @@ public class RepositoryChunk extends BaseEntity {
     @Array(length=DIMENSIONS)
     public float[] embedding;
 
+    @Column(name="published",nullable=false) public boolean published = true;
+    @Column(name="build_token") public UUID buildToken;
+    @Column(name="blob_sha",length=40) public String blobSha;
+    @Column(name="chunking_key",length=100) public String chunkingKey;
+
     @PrePersist @PreUpdate
     void validate() {
         if (repositoryId == null || commitSha == null || !commitSha.matches("[0-9a-f]{40}|[0-9a-f]{64}")

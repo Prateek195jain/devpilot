@@ -13,4 +13,11 @@ import com.devpilot.common.BaseEntity;
     @Column(name="readme",columnDefinition="text") public String readme;
     @Column(name="synced_at") public Instant syncedAt;
     @Column(name="latest_indexed_commit_sha",length=40) public String latestIndexedCommitSha;
+    @Enumerated(EnumType.STRING) @Column(name="indexing_status",nullable=false,length=20)
+    public IndexingStatus indexingStatus = IndexingStatus.NOT_INDEXED;
+    @Column(name="indexing_target_commit_sha",length=40) public String indexingTargetCommitSha;
+    @Enumerated(EnumType.STRING) @Column(name="last_indexing_error_category",length=40)
+    public IndexingErrorCategory lastIndexingErrorCategory;
+    @Column(name="indexing_job_token") public UUID indexingJobToken;
+    @Column(name="indexing_lease_until") public Instant indexingLeaseUntil;
 }

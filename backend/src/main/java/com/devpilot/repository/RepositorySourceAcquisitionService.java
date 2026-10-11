@@ -22,8 +22,23 @@ public class RepositorySourceAcquisitionService {
         this.policy = policy;
     }
 
+    public interface FileVisitor {
+        /** Return true only when a complete published file can be reused without fetching its blob. */
+        boolean reuse(String path,String blobSha);
+        void accept(RepositorySources.File file,String blobSha);
+    }
     /** Uses the authenticated user's repository ownership check before reading credentials. */
     public RepositorySources acquire(UUID repositoryId, String commitSha) {
+        List<RepositorySources.File> files = new ArrayList<>();
+        visit(repositoryId,commitSha,new FileVisitor() {
+            public boolean reuse(String path,String sha) { return false; }
+            public void accept(RepositorySources.File file,String sha) { files.add(file); }
+        });
+        return new RepositorySources(repositoryId,commitSha.toLowerCase(Locale.ROOT),files);
+    }
+
+    /** Holds tree metadata only; loads and releases one eligible source file at a time. */
+    public void visit(UUID repositoryId,String commitSha,FileVisitor visitor) {
         if (commitSha == null || !commitSha.matches("[a-fA-F0-9]{40}")) throw Problem.bad("Expected full 40-character commit SHA");
         String commit = commitSha.toLowerCase(Locale.ROOT);
         TrackedRepository repository = access.require(repositoryId);
@@ -48,14 +63,14 @@ public class RepositorySourceAcquisitionService {
                 }
             }
         }
-        List<RepositorySources.File> files = new ArrayList<>();
         candidates.forEach((path, entry) -> {
+            if (Thread.currentThread().isInterrupted()) throw new IllegalStateException("Indexing interrupted");
+            if (visitor.reuse(path,entry.sha())) return;
             byte[] bytes = provider.blob(token, repository.fullName, entry.sha());
             if (!policy.sizeAllowed(bytes.length)) return;
             if (bytes.length != entry.size()) throw Problem.upstream("GitHub source size mismatch");
-            policy.decode(bytes).ifPresent(content -> files.add(new RepositorySources.File(path, content, bytes.length, hash(bytes))));
+            policy.decode(bytes).ifPresent(content -> visitor.accept(new RepositorySources.File(path, content, bytes.length, hash(bytes)),entry.sha()));
         });
-        return new RepositorySources(repositoryId, commit, files);
     }
 
     private static String hash(byte[] bytes) {

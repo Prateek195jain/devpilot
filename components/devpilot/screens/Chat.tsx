@@ -1,4 +1,5 @@
 "use client";
+import { IndexingStatus } from '../indexing-status';
 import { ChatMessage, ChatPendingReply } from "../chat-message";
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -17,7 +18,7 @@ export function Chat({ repo }: { repo: Repo }) {
     const [recentTurns, setRecentTurns] = useState<Message[]>([]);
     const submitting = useRef(false);
     const viewport = useRef<HTMLDivElement>(null);
-    const currentRepository = useResource<Repo>(path(repo.id, ''));
+    const currentRepository = useResource<Repo>(path(repo.id, ''), 5000);
     const indexedCommit = currentRepository.data?.id === repo.id ? currentRepository.data.latestIndexedCommitSha : null;
     const conversations = useResource<Page<Conversation>>(path(repo.id, '/conversations?size=100'));
     const messages = useResource<Page<Message>>(conversation ? path(repo.id, '/conversations/' + conversation + '/messages?page=' + messagePage) : null);
@@ -87,6 +88,7 @@ export function Chat({ repo }: { repo: Repo }) {
             <header><BrainCircuit size={18}/><strong>{repo.fullName}</strong>
                 <Badge>{indexedCommit ? "INDEXED REPOSITORY" : "REPOSITORY BACKGROUND"}</Badge>
             </header>
+            <IndexingStatus repo={currentRepository.data?.id===repo.id?currentRepository.data:repo}/>
             {conversation ? <>
                 <div className="messages" ref={viewport}>
                     <State resource={messages}>

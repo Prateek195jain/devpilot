@@ -14,9 +14,9 @@ const navigation=[['dashboard','Overview',LayoutDashboard],['repositories','Repo
 export default function DevPilot(){const connection=useSyncExternalStore(startup.subscribe,startup.getSnapshot,startup.getServerSnapshot);const user=connection.user;const setUser=startup.setUser;const [selected,setSelected]=useState('');const router=useRouter();const pathname=usePathname();const page=pathname.split('/')[2]||'dashboard';
  useEffect(()=>{const expired=()=>{setUser(null);setSelected('');router.replace('/login')};window.addEventListener('devpilot:expired',expired);return()=>window.removeEventListener('devpilot:expired',expired)},[router,setUser]);
  useEffect(()=>{if(user)return registerWorkspaceTools()},[user]);
- const repositories=useResource<Page<Repo>>(user?'/repositories?size=100':null);
+ const repositories=useResource<Page<Repo>>(user?'/repositories?size=100':null,5000);
  const activeRepositoryId=selected||repositories.data?.content[0]?.id||'';
- const extra=useResource<Repo>(user&&activeRepositoryId&&!repositories.data?.content.some(r=>r.id===activeRepositoryId)?'/repositories/'+activeRepositoryId:null);
+ const extra=useResource<Repo>(user&&activeRepositoryId&&!repositories.data?.content.some(r=>r.id===activeRepositoryId)?'/repositories/'+activeRepositoryId:null,5000);
  const go=(p:string)=>router.push('/workspace/'+p);const choose=(id:string)=>{setSelected(id);go('repository')};
  if(!user&&pathname.startsWith('/workspace')&&connection.phase!=='ready')return <div className="boot"><Braces size={32}/><ConnectionStatus connection={connection}/></div>;
  if(!user)return <><AuthScreen connection={connection} register={pathname==='/register'} toggle={()=>router.push(pathname==='/register'?'/login':'/register')} onLogin={u=>{setUser(u);go('dashboard')}}/><Toaster/></>;

@@ -165,7 +165,7 @@ class RepositoryIndexingSmokeIT {
     @EnableJpaRepositories(basePackageClasses = {RepositoryStore.class, IntegrationStore.class})
     @Import({RepositoryAccess.class, IntegrationService.class, Crypto.class, GitHubSourceControlAdapter.class,
             SourceFilePolicy.class, RepositorySourceAcquisitionService.class, RepositorySourceChunker.class,
-            GoogleEmbeddingProvider.class, RepositoryIndexingService.class})
+            GoogleEmbeddingProvider.class, com.devpilot.ai.EmbeddingPacing.class, RepositoryIndexJobs.class, RepositoryIndexingService.class})
     static class SmokeConfiguration {
         @Bean
         PersistenceManagedTypes smokeEntities() {

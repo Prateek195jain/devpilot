@@ -26,7 +26,9 @@ import org.springframework.transaction.annotation.Transactional;
         return TrackedRepositoryView.of(store.save(r));
     }
     @Transactional public TrackedRepositoryView sync(UUID id) {
-        TrackedRepository r=access.require(id);
+        access.require(id);
+        TrackedRepository r=store.lock(id).orElseThrow(Problem::notFound);
+        if(!CurrentUser.id().equals(r.ownerId))throw Problem.notFound();
         String token=integration.token(r.ownerId);
         update(r,provider.repository(token,r.fullName));
         r.readme=provider.readme(token,r.fullName);

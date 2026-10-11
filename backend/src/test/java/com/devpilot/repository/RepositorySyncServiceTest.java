@@ -1,17 +1,19 @@
 package com.devpilot.repository;
 
-import com.devpilot.ai.EmbeddingProvider;
-import com.devpilot.common.Problem;
+import com.devpilot.ai.*;
+import com.devpilot.common.*;
 import com.devpilot.github.*;
 import com.devpilot.user.UserAccount;
 import jakarta.persistence.EntityManager;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.*;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.http.HttpStatus;
 import org.springframework.data.domain.Pageable;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -20,333 +22,223 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.annotation.*;
-import org.springframework.transaction.support.*;
+import org.springframework.transaction.support.TransactionTemplate;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-@DataJpaTest(showSql = false)
-@ActiveProfiles("test")
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({RepositorySyncService.class, RepositoryService.class, RepositoryAccess.class,
-        RepositoryIndexingService.class, RepositorySourceAcquisitionService.class,
-        RepositorySourceChunker.class, SourceFilePolicy.class})
-@Transactional(propagation = Propagation.NOT_SUPPORTED)
+@DataJpaTest(showSql=false,properties={"app.source-chunking.max-chars=8","app.source-chunking.overlap-chars=0"})
+@ActiveProfiles("test") @AutoConfigureTestDatabase(replace=AutoConfigureTestDatabase.Replace.NONE)
+@Import({RepositorySyncService.class,RepositoryService.class,RepositoryAccess.class,RepositoryIndexJobs.class,
+        RepositoryIndexingService.class,RepositorySourceAcquisitionService.class,RepositorySourceChunker.class,SourceFilePolicy.class})
+@Transactional(propagation=Propagation.NOT_SUPPORTED)
 class RepositorySyncServiceTest {
-    @Test void importEmbeddingFailureReturnsSafeRetryMessageAndKeepsMetadata() {
-        prepareImport();
-        when(embeddings.embedDocument(anyString(), anyString()))
-                .thenThrow(new com.devpilot.ai.EmbeddingFailure(com.devpilot.ai.EmbeddingFailure.Kind.RATE_LIMIT));
-        Problem failure = assertThrows(Problem.class, () -> sync.importRepo("test/sync"));
-        assertEquals(HttpStatus.BAD_GATEWAY, failure.status);
-        assertEquals("Repository indexing failed. Please retry shortly.", failure.getMessage());
-        assertMetadata();
-        assertNull(stored().latestIndexedCommitSha);
-        assertEquals(0, chunks.count());
-    }
-    @Test void syncEmbeddingFailureReturnsSafeRetryMessage() {
-        doThrow(new com.devpilot.ai.EmbeddingFailure(com.devpilot.ai.EmbeddingFailure.Kind.RATE_LIMIT))
-                .when(indexing).index(repositoryId, COMMIT);
-        Problem failure = assertThrows(Problem.class, () -> sync.sync(repositoryId));
-        assertEquals(HttpStatus.BAD_GATEWAY, failure.status);
-        assertEquals("Repository indexing failed. Please retry shortly.", failure.getMessage());
-        assertMetadata();
-        assertNull(stored().latestIndexedCommitSha);
-    }
-    private static final String COMMIT = "a".repeat(40), NEXT = "b".repeat(40);
+    static final String A="a".repeat(40),B="b".repeat(40),C="c".repeat(40);
     @Autowired RepositorySyncService sync;
-    @Autowired RepositoryService metadata;
-    @Autowired RepositoryAccess access;
+    @Autowired RepositoryIndexJobs jobs;
+    @Autowired RepositoryIndexingService indexing;
     @Autowired RepositoryStore repositories;
     @MockitoSpyBean RepositoryChunkStore chunks;
     @Autowired TransactionTemplate transaction;
     @Autowired EntityManager em;
-    @MockitoSpyBean RepositoryIndexingService indexing;
     @MockitoBean IntegrationService integration;
-    @MockitoBean SourceControlProvider provider;
+    @MockitoBean SourceControlProvider github;
     @MockitoBean EmbeddingProvider embeddings;
-    UUID owner, repositoryId;
-
+    UUID owner,repositoryId;
+    final List<UUID> extraOwners=new ArrayList<>();
+    final Map<String,byte[]> blobs=new HashMap<>();
     @BeforeEach void setup() {
         transaction.executeWithoutResult(status -> {
-            UserAccount user = new UserAccount();
-            user.email = UUID.randomUUID() + "@example.com";
-            user.name = "Sync test";
-            user.passwordHash = "synthetic";
-            user.role = "USER";
-            em.persist(user);
-            owner = user.id;
-            TrackedRepository repository = new TrackedRepository();
-            repository.ownerId = owner;
-            repository.githubId = 42L;
-            repository.fullName = "test/sync";
-            repository.defaultBranch = "old-main";
-            em.persist(repository);
-            repositoryId = repository.id;
+            var user=new UserAccount(); user.email=UUID.randomUUID()+"@test.example"; user.name="Index test";
+            user.passwordHash="synthetic"; user.role="USER"; em.persist(user); owner=user.id;
+            var r=new TrackedRepository(); r.ownerId=owner; r.githubId=42L; r.fullName="test/repo"; r.defaultBranch="main";
+            em.persist(r); repositoryId=r.id;
         });
         authenticate(owner);
         when(integration.token(owner)).thenReturn("token");
-        when(provider.repository("token", "test/sync")).thenReturn(
-                new SourceControlProvider.Repo(42L, "test/sync", "Updated description", "release/current", "Java"));
-        when(provider.readme("token", "test/sync")).thenReturn("Updated README");
-        when(provider.latestCommitSha("token", "test/sync", "release/current")).thenAnswer(invocation -> {
-            assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
-            assertMetadata(); // The metadata transaction has already committed.
-            return COMMIT.toUpperCase(Locale.ROOT);
+        when(github.repository("token","test/repo")).thenReturn(new SourceControlProvider.Repo(42L,"test/repo","Updated","main","Java"));
+        when(github.readme("token","test/repo")).thenReturn("README");
+        when(github.latestCommitSha("token","test/repo","main")).thenAnswer(call -> {
+            assertFalse(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+            assertNotNull(stored().syncedAt); return A;
         });
-        when(provider.commitTree(eq("token"), eq("test/sync"), anyString())).thenAnswer(invocation -> {
-            assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
-            return "c".repeat(40);
+        when(github.commitTree(eq("token"),eq("test/repo"),anyString())).thenAnswer(call -> call.getArgument(2));
+        when(github.blob(eq("token"),eq("test/repo"),anyString())).thenAnswer(call -> blobs.get(call.getArgument(2)));
+        when(embeddings.model()).thenReturn("test-model"); when(embeddings.dimensions()).thenReturn(768);
+        when(embeddings.embedDocument(anyString(),anyString())).thenAnswer(call -> {
+            assertFalse(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()); return embedding();
         });
-        when(provider.tree("token", "test/sync", "c".repeat(40))).thenReturn(List.of(
-                new SourceControlProvider.TreeEntry("README.md", "blob", "100644", "d".repeat(40), 2)));
-        when(provider.blob("token", "test/sync", "d".repeat(40))).thenReturn(new byte[] {'o', 'k'});
-        when(embeddings.model()).thenReturn("test-model");
-        when(embeddings.dimensions()).thenReturn(768);
-        when(embeddings.embedDocument(anyString(), anyString())).thenAnswer(invocation -> {
-            assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
-            return new EmbeddingProvider.Embedding("test-model", 768, Collections.nCopies(768, 0.25));
-        });
+        snapshot(A,Map.of("one.java","one\n"));
     }
-
     @AfterEach void cleanup() {
         SecurityContextHolder.clearContext();
         transaction.executeWithoutResult(status -> {
-            chunks.deleteCommit(repositoryId, COMMIT);
-            chunks.deleteCommit(repositoryId, NEXT);
-            repositories.deleteById(repositoryId);
-            em.remove(em.find(UserAccount.class, owner));
+            chunks.deleteAllInBatch(); repositories.deleteAllInBatch(); em.remove(em.find(UserAccount.class,owner)); for(var id:extraOwners) em.remove(em.find(UserAccount.class,id));
         });
     }
-
-    private void authenticate(UUID user) {
-        var context = SecurityContextHolder.createEmptyContext();
-        context.setAuthentication(new UsernamePasswordAuthenticationToken(user.toString(), null, List.of()));
-        SecurityContextHolder.setContext(context);
-    }
-
-    private TrackedRepository stored() { return repositories.findById(repositoryId).orElseThrow(); }
-
-    private void assertMetadata() {
-        var repository = stored();
-        assertEquals("Updated description", repository.description);
-        assertEquals("release/current", repository.defaultBranch);
-        assertEquals("Java", repository.language);
-        assertEquals("Updated README", repository.readme);
-        assertEquals(42L, repository.githubId);
-        assertNotNull(repository.syncedAt);
-    }
-
-    @Test void endpointSyncsMetadataThenIndexesLatestDefaultBranchCommitAndReturnsPublishedSha() {
-        var controller = new RepositoryController(repositories, access, integration, provider, sync, null);
-        var result = controller.sync(repositoryId);
-        assertEquals(COMMIT, stored().latestIndexedCommitSha);
-        assertEquals(COMMIT, result.latestIndexedCommitSha());
-        assertMetadata();
-        var order = inOrder(provider, indexing);
-        order.verify(provider).repository("token", "test/sync");
-        order.verify(provider).readme("token", "test/sync");
-        order.verify(provider).latestCommitSha("token", "test/sync", "release/current");
-        order.verify(indexing).index(repositoryId, COMMIT);
-        assertEquals(1, chunks.count());
-        verify(provider).commitTree("token", "test/sync", COMMIT);
-    }
-
-    @Test void samePublishedCommitSkipsAcquisitionAndEmbeddingsButStillSyncsMetadata() {
-        sync.sync(repositoryId);
-        clearInvocations(provider, indexing, embeddings);
-        assertEquals(COMMIT, sync.sync(repositoryId).latestIndexedCommitSha());
-        verify(provider).repository("token", "test/sync");
-        verify(provider).readme("token", "test/sync");
-        verify(indexing, never()).index(any(), any());
-        verify(provider, never()).commitTree(any(), any(), any());
-        verifyNoInteractions(embeddings);
-        assertMetadata();
-    }
-
-    @Test void indexingFailurePreservesPreviousPublishedCommitAndChunksAndCommittedMetadata() {
-        sync.sync(repositoryId);
-        var ids = chunks.findAll().stream().map(row -> row.id).toList();
-        doReturn(NEXT).when(provider).latestCommitSha("token", "test/sync", "release/current");
-        when(embeddings.embedDocument(anyString(), anyString())).thenThrow(new IllegalStateException("synthetic"));
-        assertIndexingFailure();
-        assertEquals(COMMIT, stored().latestIndexedCommitSha);
-        assertEquals(ids, chunks.findAll().stream().map(row -> row.id).toList());
-        verify(indexing).index(repositoryId, NEXT);
-    }
-
-    @Test void firstIndexingFailureLeavesPointerNullAndNoChunks() {
-        when(embeddings.embedDocument(anyString(), anyString())).thenThrow(new IllegalStateException("synthetic"));
-        assertIndexingFailure();
-        assertNull(stored().latestIndexedCommitSha);
-        assertEquals(0, chunks.count());
-    }
-
-    @Test void publicationFailureRollsBackIndexButKeepsMetadata() {
-        sync.sync(repositoryId);
-        doReturn(NEXT).when(provider).latestCommitSha("token", "test/sync", "release/current");
-        transaction.executeWithoutResult(status -> {
-            var repository = repositories.findById(repositoryId).orElseThrow();
-            repository.description = "Description before sync";
+    void authenticate(UUID user) { SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(user.toString(),null,List.of())); }
+    TrackedRepository stored() { return repositories.findById(repositoryId).orElseThrow(); }
+    EmbeddingProvider.Embedding embedding() { return new EmbeddingProvider.Embedding("test-model",768,Collections.nCopies(768,0.25)); }
+    void snapshot(String commit,Map<String,String> files) {
+        List<SourceControlProvider.TreeEntry> entries=new ArrayList<>();
+        new TreeMap<>(files).forEach((path,content) -> {
+            var bytes=content.getBytes(StandardCharsets.UTF_8); String sha=Crypto.hash(content).substring(0,40); blobs.put(sha,bytes);
+            entries.add(new SourceControlProvider.TreeEntry(path,"blob","100644",sha,bytes.length));
         });
-        // A failure after inserting a chunk must roll back both chunk and pointer publication.
-        doAnswer(invocation -> {
-            List<RepositoryChunk> prepared = invocation.getArgument(0);
-            chunks.saveAndFlush(prepared.getFirst());
-            throw new IllegalStateException("Synthetic publication failure");
-        }).when(chunks).saveAllAndFlush(any());
-        assertIndexingFailure();
-        assertEquals(COMMIT, stored().latestIndexedCommitSha);
-        assertEquals(1, chunks.count());
+        when(github.tree("token","test/repo",commit)).thenReturn(entries);
     }
+    void target(String commit) { doReturn(commit).when(github).latestCommitSha("token","test/repo","main"); }
+    RepositoryIndexJobs.Job claim() { return jobs.claim(repositoryId).orElseThrow(); }
+    void run() { var job=claim(); try { indexing.build(job); } catch(RuntimeException failure) { jobs.fail(job,failure); throw failure; } }
+    List<RepositoryChunk> rows(String commit) { return chunks.findByRepositoryIdAndCommitShaOrderBySourcePathAscChunkIndexAsc(repositoryId,commit,Pageable.unpaged()).getContent(); }
+    void ready() { sync.sync(repositoryId); run(); assertEquals(A,stored().latestIndexedCommitSha); }
 
-    private void assertIndexingFailure() {
-        Problem failure = assertThrows(Problem.class, () -> sync.sync(repositoryId));
-        assertEquals(HttpStatus.BAD_GATEWAY, failure.status);
-        assertTrue(failure.getMessage().contains("metadata synced"));
-        assertTrue(failure.getMessage().contains("indexing failed"));
-        assertMetadata();
+    @Test void syncReturnsQueuedWithoutCallingEmbeddings() {
+        var result=sync.sync(repositoryId);
+        assertEquals(IndexingStatus.INDEXING,result.indexingStatus()); assertEquals(A,result.indexingTargetCommitSha());
+        assertNull(result.latestIndexedCommitSha()); verify(embeddings,never()).embedDocument(anyString(),anyString());
+        verify(github,never()).commitTree(anyString(),anyString(),anyString());
+        run(); assertEquals(IndexingStatus.READY,stored().indexingStatus); assertEquals(A,stored().latestIndexedCommitSha);
     }
-
-    @Test void shaResolutionFailureKeepsMetadataAndDoesNotIndex() {
-        doThrow(Problem.upstream("GitHub")).when(provider).latestCommitSha("token", "test/sync", "release/current");
-        assertIndexingFailure();
-        assertNull(stored().latestIndexedCommitSha);
-        verifyNoInteractions(indexing, embeddings);
-    }
-
-    @Test void movingRefOrShortShaCannotReachIndexer() {
-        for (String invalid : Arrays.asList("main", "abc1234", null)) {
-            doReturn(invalid).when(provider).latestCommitSha("token", "test/sync", "release/current");
-            assertIndexingFailure();
-        }
-        assertNull(stored().latestIndexedCommitSha);
-        verifyNoInteractions(indexing, embeddings);
-    }
-
-    @Test void failedMetadataSyncDoesNotResolveOrIndexAndRollsBackMetadata() {
-        when(provider.repository("token", "test/sync")).thenThrow(Problem.upstream("GitHub"));
-        assertThrows(Problem.class, () -> sync.sync(repositoryId));
-        assertEquals("old-main", stored().defaultBranch);
-        assertNull(stored().syncedAt);
-        verify(provider, never()).latestCommitSha(any(), any(), any());
-        verifyNoInteractions(indexing, embeddings);
-    }
-
-    @Test void anotherOwnersRepositoryIsRejectedBeforeCredentialsOrNetwork() {
-        authenticate(UUID.randomUUID());
-        assertEquals(HttpStatus.NOT_FOUND, assertThrows(Problem.class, () -> sync.sync(repositoryId)).status);
-        verifyNoInteractions(provider, integration, indexing, embeddings);
-        assertNull(stored().latestIndexedCommitSha);
-    }
-
-    @Test void ambientTransactionIsRejectedBeforeMetadataSync() {
-        assertThrows(IllegalTransactionStateException.class,
-                () -> transaction.execute(status -> sync.sync(repositoryId)));
-        verifyNoInteractions(provider, integration, indexing, embeddings);
-    }
-
-    /** Remove the existing fixture so the test exercises creation of a new record. */
-    private void prepareImport() {
+    @Test void importReturnsQueuedWithoutCallingEmbeddings() {
         transaction.executeWithoutResult(status -> repositories.deleteById(repositoryId));
-        doAnswer(invocation -> {
-            assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
-            var imported = repositories.findByOwnerId(owner, Pageable.unpaged()).getContent();
-            assertEquals(1, imported.size());
-            repositoryId = imported.getFirst().id;
-            assertMetadata(); // Creation and initial metadata are committed before SHA resolution.
-            assertNull(stored().latestIndexedCommitSha);
-            return COMMIT.toUpperCase(Locale.ROOT);
-        }).when(provider).latestCommitSha("token", "test/sync", "release/current");
+        doAnswer(call -> { repositoryId=repositories.findByOwnerId(owner,Pageable.unpaged()).getContent().getFirst().id; return A; })
+                .when(github).latestCommitSha("token","test/repo","main");
+        var result=sync.importRepo("test/repo"); assertEquals(IndexingStatus.INDEXING,result.indexingStatus());
+        assertNull(result.latestIndexedCommitSha()); verify(embeddings,never()).embedDocument(anyString(),anyString());
+        run(); assertEquals(A,stored().latestIndexedCommitSha);
     }
-
-    @Test void addEndpointCreatesAndIndexesRepositoryUsingSameImmutableShaPathAsSync() {
-        prepareImport();
-        var controller = new RepositoryController(repositories, access, integration, provider, sync, null);
-        var result = controller.create(new RepositoryController.Import("test/sync"));
-        assertEquals(repositoryId, result.id());
-        assertEquals(owner, result.ownerId());
-        assertEquals(COMMIT, result.latestIndexedCommitSha());
-        assertEquals(COMMIT, stored().latestIndexedCommitSha);
-        assertMetadata();
-        var rows = chunks.findAll();
-        assertEquals(1, rows.size());
-        assertEquals(repositoryId, rows.getFirst().repositoryId);
-        assertEquals(COMMIT, rows.getFirst().commitSha);
-        assertEquals(40, rows.getFirst().commitSha.length());
-        var order = inOrder(provider, indexing);
-        order.verify(provider).repository("token", "test/sync");
-        order.verify(provider).readme("token", "test/sync");
-        order.verify(provider).latestCommitSha("token", "test/sync", "release/current");
-        order.verify(indexing).index(repositoryId, COMMIT);
-        verify(provider, times(1)).repository("token", "test/sync");
-        verify(provider, times(1)).readme("token", "test/sync");
-        verify(provider).commitTree("token", "test/sync", COMMIT);
-
-        // A different signed-in user cannot access or sync the newly imported repository.
-        authenticate(UUID.randomUUID());
-        clearInvocations(provider, integration, indexing, embeddings);
-        assertEquals(HttpStatus.NOT_FOUND, assertThrows(Problem.class, () -> access.require(repositoryId)).status);
-        assertEquals(HttpStatus.NOT_FOUND, assertThrows(Problem.class, () -> sync.sync(repositoryId)).status);
-        verifyNoInteractions(provider, integration, indexing, embeddings);
-        assertEquals(COMMIT, stored().latestIndexedCommitSha);
+    @Test void backgroundWorkerDoesNotBlockSyncAndDeduplicatesWhileEmbedding() throws Exception {
+        var entered=new CountDownLatch(1); var release=new CountDownLatch(1);
+        when(embeddings.embedDocument(anyString(),anyString())).thenAnswer(call -> { entered.countDown(); assertTrue(release.await(10,TimeUnit.SECONDS)); return embedding(); });
+        var worker=new RepositoryIndexWorker(jobs,indexing,1);
+        try {
+            sync.sync(repositoryId); worker.tick(); assertTrue(entered.await(5,TimeUnit.SECONDS));
+            var repeated=sync.sync(repositoryId); assertEquals(IndexingStatus.INDEXING,repeated.indexingStatus());
+            assertTrue(jobs.claim(repositoryId).isEmpty()); worker.tick(); verify(embeddings,times(1)).embedDocument(anyString(),anyString());
+            release.countDown(); long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10);
+            while(stored().indexingStatus==IndexingStatus.INDEXING && System.nanoTime()<deadline) Thread.sleep(10);
+            assertEquals(IndexingStatus.READY,stored().indexingStatus); assertEquals(A,stored().latestIndexedCommitSha);
+        } finally { release.countDown(); worker.stop(); }
     }
-
-    @Test void addPartialEmbeddingFailureKeepsCreatedMetadataWithoutPublishingChunksOrSha() {
-        prepareImport();
-        when(provider.tree("token", "test/sync", "c".repeat(40))).thenReturn(List.of(
-                new SourceControlProvider.TreeEntry("README.md", "blob", "100644", "d".repeat(40), 2),
-                new SourceControlProvider.TreeEntry("other.md", "blob", "100644", "d".repeat(40), 2)));
-        when(embeddings.embedDocument(anyString(), anyString()))
-                .thenReturn(new EmbeddingProvider.Embedding("test-model", 768, Collections.nCopies(768, 0.25)))
-                .thenThrow(new IllegalStateException("Synthetic second embedding failure"));
-        assertImportIndexingFailure();
-        verify(embeddings, times(2)).embedDocument(anyString(), anyString());
+    @Test void samePublishedTargetDoesNoWork() {
+        ready(); clearInvocations(embeddings,github); sync.sync(repositoryId);
+        assertEquals(IndexingStatus.READY,stored().indexingStatus); assertTrue(jobs.claim(repositoryId).isEmpty());
+        verify(embeddings,never()).embedDocument(anyString(),anyString()); verify(github,never()).commitTree(anyString(),anyString(),anyString());
     }
-
-    @Test void addPublicationFailureRollsBackInsertedChunksButKeepsCreatedRepository() {
-        prepareImport();
-        doAnswer(invocation -> {
-            List<RepositoryChunk> prepared = invocation.getArgument(0);
-            chunks.saveAndFlush(prepared.getFirst());
-            throw new IllegalStateException("Synthetic import publication failure");
-        }).when(chunks).saveAllAndFlush(any());
-        assertImportIndexingFailure();
+    @Test void unchangedBlobSkipsDownloadAndEmbeddingAndNewCommitIsComplete() {
+        ready(); snapshot(B,Map.of("one.java","one\n")); target(B); clearInvocations(embeddings,github);
+        sync.sync(repositoryId); assertEquals(A,stored().latestIndexedCommitSha); run();
+        verify(embeddings,never()).embedDocument(anyString(),anyString()); verify(github,never()).blob(anyString(),anyString(),anyString());
+        assertEquals(B,stored().latestIndexedCommitSha); assertEquals(rows(A).getFirst().content,rows(B).getFirst().content);
+        assertArrayEquals(rows(A).getFirst().embedding,rows(B).getFirst().embedding);
     }
-
-    private void assertImportIndexingFailure() {
-        Problem failure = assertThrows(Problem.class, () -> sync.importRepo("test/sync"));
-        assertEquals(HttpStatus.BAD_GATEWAY, failure.status);
-        assertTrue(failure.getMessage().contains("Repository imported"));
-        assertTrue(failure.getMessage().contains("indexing failed"));
-        assertTrue(failure.getMessage().contains("repository was saved"));
-        assertMetadata();
-        assertEquals(owner, stored().ownerId);
-        assertNull(stored().latestIndexedCommitSha);
-        assertEquals(0, chunks.count());
+    @Test void modifiedFileEmbedsOnlyChangedChunk() {
+        snapshot(A,Map.of("one.java","same\nold\n")); ready();
+        snapshot(B,Map.of("one.java","same\nchanged\n")); target(B); clearInvocations(embeddings); sync.sync(repositoryId); run();
+        verify(embeddings,times(1)).embedDocument("one.java","changed\n");
+        assertEquals(List.of("same\n","changed\n"),rows(B).stream().map(row -> row.content).toList());
     }
-
-    @Test void addGitHubFailureDoesNotCreateRepositoryOrStartIndexing() {
-        prepareImport();
-        when(provider.repository("token", "test/sync")).thenThrow(Problem.upstream("GitHub"));
-        assertThrows(Problem.class, () -> sync.importRepo("test/sync"));
-        assertTrue(repositories.findByOwnerId(owner, Pageable.unpaged()).isEmpty());
-        verify(provider, never()).latestCommitSha(any(), any(), any());
-        verifyNoInteractions(indexing, embeddings);
+    @Test void addedAndDeletedFilesAreScopedToTargetCommit() {
+        ready(); snapshot(B,Map.of("added.java","new\n")); target(B); clearInvocations(embeddings); sync.sync(repositoryId); run();
+        verify(embeddings,times(1)).embedDocument("added.java","new\n");
+        assertEquals(List.of("added.java"),rows(B).stream().map(row -> row.sourcePath).toList()); assertEquals("one.java",rows(A).getFirst().sourcePath);
     }
-
-    @Test void addUsesCurrentUsersCredentialsAndPreservesAuthFailure() {
-        prepareImport();
-        when(integration.token(owner)).thenThrow(Problem.unauthorized());
-        assertEquals(HttpStatus.UNAUTHORIZED, assertThrows(Problem.class, () -> sync.importRepo("test/sync")).status);
-        verify(integration).token(owner);
-        verifyNoInteractions(provider, indexing, embeddings);
-        assertTrue(repositories.findByOwnerId(owner, Pageable.unpaged()).isEmpty());
+    @Test void renameWithUnchangedBlobReusesVector() {
+        ready(); snapshot(B,Map.of("renamed.java","one\n")); target(B); clearInvocations(embeddings,github); sync.sync(repositoryId); run();
+        verify(embeddings,never()).embedDocument(anyString(),anyString()); verify(github,never()).blob(anyString(),anyString(),anyString());
+        assertEquals("renamed.java",rows(B).getFirst().sourcePath); assertArrayEquals(rows(A).getFirst().embedding,rows(B).getFirst().embedding);
     }
-
-    @Test void addRejectsAmbientTransactionBeforeCreatingRepository() {
-        assertThrows(IllegalTransactionStateException.class,
-                () -> transaction.execute(status -> sync.importRepo("test/sync")));
-        verifyNoInteractions(provider, integration, indexing, embeddings);
+    @Test void exactChunkHashReusesEmbeddingInsideModifiedBlob() {
+        ready(); snapshot(B,Map.of("copy.java","one\nextra\n")); target(B); clearInvocations(embeddings); sync.sync(repositoryId); run();
+        verify(embeddings,times(1)).embedDocument("copy.java","extra\n"); assertEquals(2,rows(B).size());
+    }
+    @Test void failedRefreshPreservesPublishedIndexAndRetryReusesCheckpoint() {
+        ready(); snapshot(B,Map.of("a.java","added\n","z.java","failed\n")); target(B);
+        when(embeddings.embedDocument(anyString(),anyString())).thenReturn(embedding()).thenThrow(new EmbeddingFailure(EmbeddingFailure.Kind.RATE_LIMIT));
+        sync.sync(repositoryId); var oldIds=rows(A).stream().map(row -> row.id).toList();
+        assertThrows(EmbeddingFailure.class,this::run); assertEquals(IndexingStatus.FAILED,stored().indexingStatus);
+        assertEquals(IndexingErrorCategory.RATE_LIMIT,stored().lastIndexingErrorCategory); assertEquals(A,stored().latestIndexedCommitSha);
+        assertEquals(oldIds,rows(A).stream().map(row -> row.id).toList()); assertEquals(1,rows(B).size()); assertFalse(rows(B).getFirst().published);
+        doReturn(embedding()).when(embeddings).embedDocument(anyString(),anyString()); clearInvocations(embeddings);
+        sync.sync(repositoryId); run(); verify(embeddings,times(1)).embedDocument("z.java","failed\n");
+        assertEquals(B,stored().latestIndexedCommitSha); assertTrue(rows(B).stream().allMatch(row -> row.published));
+    }
+    @Test void firstFailureKeepsNullShaAndSafeCategory() {
+        when(embeddings.embedDocument(anyString(),anyString())).thenThrow(new EmbeddingFailure(EmbeddingFailure.Kind.AUTHENTICATION));
+        sync.sync(repositoryId); assertThrows(EmbeddingFailure.class,this::run);
+        assertEquals(IndexingStatus.FAILED,stored().indexingStatus); assertNull(stored().latestIndexedCommitSha);
+        assertEquals(IndexingErrorCategory.AUTHENTICATION,stored().lastIndexingErrorCategory);
+    }
+    @Test void publicationFailureLeavesAllCandidateRowsHiddenAndPreviousPointerIntact() {
+        ready(); snapshot(B,Map.of("new.java","new\n")); target(B); sync.sync(repositoryId);
+        doThrow(new IllegalStateException("synthetic publication failure")).when(chunks).publish(eq(repositoryId),eq(B),any());
+        assertThrows(IllegalStateException.class,this::run); assertEquals(A,stored().latestIndexedCommitSha);
+        assertTrue(rows(B).stream().noneMatch(row -> row.published)); assertEquals(IndexingStatus.FAILED,stored().indexingStatus);
+    }
+    @Test void newerTargetWaitsForActiveBuildThenRunsNewest() {
+        sync.sync(repositoryId); var active=claim(); snapshot(B,Map.of("b.java","b\n")); target(B); sync.sync(repositoryId);
+        snapshot(C,Map.of("c.java","c\n")); target(C); sync.sync(repositoryId); assertTrue(jobs.claim(repositoryId).isEmpty());
+        indexing.build(active); assertEquals(A,stored().latestIndexedCommitSha); assertEquals(IndexingStatus.INDEXING,stored().indexingStatus);
+        assertEquals(C,stored().indexingTargetCommitSha); run(); assertEquals(C,stored().latestIndexedCommitSha); assertTrue(rows(B).isEmpty());
+    }
+    @Test void expiredLeaseIsRecoverableAndOldWorkerCannotWrite() {
+        sync.sync(repositoryId); var abandoned=claim();
+        transaction.executeWithoutResult(status -> repositories.lock(repositoryId).orElseThrow().indexingLeaseUntil=Instant.now().minusSeconds(1));
+        var replacement=claim(); assertNotEquals(abandoned.token(),replacement.token());
+        assertThrows(Problem.class,() -> indexing.build(abandoned));
+        jobs.fail(abandoned,new IllegalStateException("stale worker")); assertEquals(IndexingStatus.INDEXING,stored().indexingStatus);
+        indexing.build(replacement);
+        assertEquals(IndexingStatus.READY,stored().indexingStatus); assertEquals(A,stored().latestIndexedCommitSha);
+    }
+    @Test void retryCleansUnvisitedCheckpointPositionsBeforePublication() {
+        sync.sync(repositoryId);
+        transaction.executeWithoutResult(status -> {
+            var extra=new RepositoryChunk(); extra.repositoryId=repositoryId; extra.commitSha=A; extra.sourcePath="removed.java";
+            extra.content="stale"; extra.contentHash=Crypto.hash(extra.content); extra.embeddingModel="test-model";
+            extra.embedding=new float[768]; java.util.Arrays.fill(extra.embedding,0.25f);
+            extra.published=false; extra.buildToken=UUID.randomUUID(); chunks.saveAndFlush(extra);
+        });
+        run(); assertEquals(java.util.List.of("one.java"),rows(A).stream().map(row -> row.sourcePath).toList());
+        assertTrue(rows(A).getFirst().published);
+    }
+    @Test void immutableShaValidationPreventsQueueingMovingRefs() {
+        for(String value:new String[]{"main","abcdefg"}) {
+            target(value); assertThrows(Problem.class,() -> sync.sync(repositoryId));
+            assertEquals(IndexingStatus.NOT_INDEXED,stored().indexingStatus); assertNull(stored().indexingTargetCommitSha);
+        }
+        verify(embeddings,never()).embedDocument(anyString(),anyString());
+    }
+    @Test void metadataFailureDoesNotResolveOrEnqueueTarget() {
+        when(github.repository("token","test/repo")).thenThrow(Problem.upstream("GitHub"));
+        assertThrows(Problem.class,() -> sync.sync(repositoryId)); assertNull(stored().syncedAt);
+        assertEquals(IndexingStatus.NOT_INDEXED,stored().indexingStatus);
+        verify(github,never()).latestCommitSha(anyString(),anyString(),anyString());
+    }
+    @Test void failedSourceResolutionKeepsCommittedMetadataWithoutQueueing() {
+        doThrow(Problem.upstream("GitHub")).when(github).latestCommitSha(anyString(),anyString(),anyString());
+        assertThrows(Problem.class,() -> sync.sync(repositoryId)); assertNotNull(stored().syncedAt);
+        assertEquals(IndexingStatus.NOT_INDEXED,stored().indexingStatus); verify(embeddings,never()).embedDocument(anyString(),anyString());
+    }
+    @Test void ownershipAndAmbientTransactionsAreRejectedBeforeNetwork() {
+        authenticate(UUID.randomUUID()); assertEquals(org.springframework.http.HttpStatus.NOT_FOUND,assertThrows(Problem.class,() -> sync.sync(repositoryId)).status);
+        verifyNoInteractions(github,embeddings); authenticate(owner);
+        assertThrows(IllegalTransactionStateException.class,() -> transaction.execute(status -> sync.sync(repositoryId)));
+    }
+    @Test void ownershipIsRecheckedBeforeCandidateWrite() {
+        when(embeddings.embedDocument(anyString(),anyString())).thenAnswer(call -> {
+            transaction.executeWithoutResult(status -> {
+                var other=new UserAccount(); other.email=UUID.randomUUID()+"@test.example"; other.name="Other owner";
+                other.passwordHash="synthetic"; other.role="USER"; em.persist(other); extraOwners.add(other.id);
+                repositories.lock(repositoryId).orElseThrow().ownerId=other.id;
+            }); return embedding();
+        });
+        sync.sync(repositoryId); assertThrows(Problem.class,this::run); assertTrue(rows(A).isEmpty()); assertNull(stored().latestIndexedCommitSha);
+    }
+    @Test void modelMismatchCannotReusePublishedEmbedding() {
+        ready(); snapshot(B,Map.of("one.java","one\n")); target(B); when(embeddings.model()).thenReturn("new-model");
+        when(embeddings.embedDocument(anyString(),anyString())).thenReturn(new EmbeddingProvider.Embedding("new-model",768,Collections.nCopies(768,0.5)));
+        clearInvocations(embeddings); sync.sync(repositoryId); run(); verify(embeddings,times(1)).embedDocument(anyString(),anyString());
+        assertEquals("new-model",rows(B).getFirst().embeddingModel);
     }
 }

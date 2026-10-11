@@ -268,3 +268,11 @@ for(const path of ['/repositories','/repositories/r/sync']) {
   global.fetch=async()=>response(200,{id:'r'});assert.deepEqual(await c.api(path,'POST',{}),{id:'r'});
  });
 }
+
+for(const indexingStatus of ['INDEXING','FAILED']) {
+ test('chat continues using published SHA during '+indexingStatus,async()=>{
+  const c=await client();const published='a'.repeat(40),target='b'.repeat(40);let body;
+  global.fetch=async(url,opts)=>{if(opts.method==='GET')return response(200,{id:'r',latestIndexedCommitSha:published,indexingTargetCommitSha:target,indexingStatus});body=JSON.parse(opts.body);return response(200,[])};
+  await c.sendChatMessage('r','c','question');assert.equal(body.commitSha,published);
+ });
+}
