@@ -33,6 +33,8 @@ app:
     workers: ${INDEXING_WORKERS:1}
     poll-ms: ${INDEXING_POLL_MS:2000}
     lease-seconds: ${INDEXING_LEASE_SECONDS:300}
+    retry-initial-seconds: ${INDEXING_RETRY_INITIAL_SECONDS:300}
+    retry-max-seconds: ${INDEXING_RETRY_MAX_SECONDS:1800}
   repository-context:
     max-chars: ${REPOSITORY_CONTEXT_MAX_CHARS:24000}
   retrieval:

@@ -13,28 +13,37 @@ import org.springframework.transaction.support.TransactionTemplate;
 /** Durable queue on the repository row. Every candidate write and publication is fenced by its lease token. */
 @Service
 public class RepositoryIndexJobs {
+    private static final org.slf4j.Logger log=org.slf4j.LoggerFactory.getLogger(RepositoryIndexJobs.class);
     public record Job(UUID repositoryId, UUID ownerId, String commitSha, UUID token) {}
     private final RepositoryStore repositories;
     private final RepositoryChunkStore chunks;
     private final TransactionTemplate transaction;
     private final int leaseSeconds;
+    private final long retryInitialSeconds, retryMaxSeconds;
 
     public RepositoryIndexJobs(RepositoryStore repositories, RepositoryChunkStore chunks, TransactionTemplate transaction,
-            @Value("${app.indexing.lease-seconds:300}") int leaseSeconds) {
+            @Value("${app.indexing.lease-seconds:300}") int leaseSeconds,
+            @Value("${app.indexing.retry-initial-seconds:300}") long retryInitialSeconds,
+            @Value("${app.indexing.retry-max-seconds:1800}") long retryMaxSeconds) {
         if (leaseSeconds < 120 || leaseSeconds > 3600) throw new IllegalArgumentException("Invalid indexing lease duration");
+        if (retryInitialSeconds < 120 || retryMaxSeconds < retryInitialSeconds || retryMaxSeconds > 86400)
+            throw new IllegalArgumentException("Invalid indexing retry cooldown");
         this.repositories= repositories; this.chunks=chunks; this.transaction=transaction; this.leaseSeconds=leaseSeconds;
+        this.retryInitialSeconds=retryInitialSeconds; this.retryMaxSeconds=retryMaxSeconds;
     }
     int leaseSeconds() { return leaseSeconds; }
     public void enqueue(UUID id, UUID owner, String commit) {
         if (commit == null || !commit.matches("[0-9a-f]{40}")) throw Problem.bad("Expected immutable commit SHA");
         transaction.executeWithoutResult(status -> {
             var r=owned(id,owner);
+            if (commit.equals(r.indexingTargetCommitSha) && r.indexingStatus==IndexingStatus.WAITING_RETRY) return;
             boolean active=r.indexingJobToken!=null && r.indexingLeaseUntil!=null && r.indexingLeaseUntil.isAfter(Instant.now());
             if (!active && (commit.equals(r.latestIndexedCommitSha)
                     || (r.indexingStatus==IndexingStatus.READY && commit.equals(r.indexingTargetCommitSha)))) {
                 r.indexingStatus=IndexingStatus.READY; r.indexingTargetCommitSha=commit; r.lastIndexingErrorCategory=null;
-                r.indexingJobToken=null; r.indexingLeaseUntil=null; return;
+                r.indexingJobToken=null; r.indexingLeaseUntil=null; resetRetry(r); return;
             }
+            if (!commit.equals(r.indexingTargetCommitSha)) resetRetry(r);
             r.indexingTargetCommitSha=commit; r.indexingStatus=IndexingStatus.INDEXING; r.lastIndexingErrorCategory=null;
         });
     }
@@ -46,8 +55,11 @@ public class RepositoryIndexJobs {
     public Optional<Job> claim(UUID id) {
         return transaction.execute(status -> {
             var r=repositories.lock(id).orElse(null);
-            if (r==null || r.indexingStatus!=IndexingStatus.INDEXING || r.indexingTargetCommitSha==null) return Optional.empty();
+            if (r==null || (r.indexingStatus!=IndexingStatus.INDEXING && r.indexingStatus!=IndexingStatus.WAITING_RETRY)
+                    || r.indexingTargetCommitSha==null) return Optional.empty();
+            if (r.nextIndexingAttemptAt!=null && r.nextIndexingAttemptAt.isAfter(Instant.now())) return Optional.empty();
             if (r.indexingJobToken!=null && r.indexingLeaseUntil!=null && r.indexingLeaseUntil.isAfter(Instant.now())) return Optional.empty();
+            r.indexingStatus=IndexingStatus.INDEXING; r.nextIndexingAttemptAt=null; r.lastIndexingErrorCategory=null;
             r.indexingJobToken=UUID.randomUUID(); r.indexingLeaseUntil=Instant.now().plusSeconds(leaseSeconds);
             return Optional.of(new Job(id,r.ownerId,r.indexingTargetCommitSha,r.indexingJobToken));
         });
@@ -89,13 +101,30 @@ public class RepositoryIndexJobs {
                 try { category=IndexingErrorCategory.valueOf(embedding.category()); }
                 catch (IllegalArgumentException ignored) { category=IndexingErrorCategory.PROVIDER_UNAVAILABLE; }
             } else if (failure instanceof Problem) category=IndexingErrorCategory.SOURCE_UNAVAILABLE;
+            if (category==IndexingErrorCategory.RATE_LIMIT && job.commitSha().equals(r.indexingTargetCommitSha)) {
+                r.indexingRetryCount=Math.min(Integer.MAX_VALUE-1,r.indexingRetryCount)+1;
+                var embedding=(EmbeddingFailure)failure;
+                r.nextIndexingAttemptAt=Instant.now().plusSeconds(cooldownSeconds(r.indexingRetryCount,embedding.retryAfterSeconds()));
+                r.indexingStatus=IndexingStatus.WAITING_RETRY; r.lastIndexingErrorCategory=category;
+                r.indexingJobToken=null; r.indexingLeaseUntil=null;
+                log.info("repository_index_retry_scheduled repositoryId={} commitSha={} retryCount={} nextAttemptAt={}",
+                        r.id,job.commitSha(),r.indexingRetryCount,r.nextIndexingAttemptAt);
+                return;
+            }
             finish(r,job,category);
         });
     }
     private void finish(TrackedRepository r,Job job,IndexingErrorCategory error) {
         r.indexingJobToken=null; r.indexingLeaseUntil=null;
+        resetRetry(r);
         if (!job.commitSha().equals(r.indexingTargetCommitSha)) {
             r.indexingStatus=IndexingStatus.INDEXING; r.lastIndexingErrorCategory=null;
         } else { r.indexingStatus=error==null?IndexingStatus.READY:IndexingStatus.FAILED; r.lastIndexingErrorCategory=error; }
     }
+    long cooldownSeconds(int retryCount,Long retryAfterSeconds) {
+        long delay=retryInitialSeconds;
+        for (int attempt=1; attempt<retryCount && delay<retryMaxSeconds; attempt++) delay=Math.min(retryMaxSeconds,delay*2);
+        return Math.min(retryMaxSeconds,Math.max(delay,retryAfterSeconds==null?0:retryAfterSeconds));
+    }
+    private static void resetRetry(TrackedRepository r) { r.nextIndexingAttemptAt=null; r.indexingRetryCount=0; }
 }

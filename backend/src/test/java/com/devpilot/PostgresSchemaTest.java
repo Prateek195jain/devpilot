@@ -31,6 +31,28 @@ import static org.junit.jupiter.api.Assertions.*;
 
     @Autowired EntityManager entities;
 
+    @Test @Transactional void migrationRecoversExistingRateLimitedJobsWithoutTouchingPublishedPointer() throws Exception {
+        var owner=new UserAccount(); owner.email=UUID.randomUUID()+"@example.com"; owner.name="Retry migration";
+        owner.passwordHash="synthetic"; owner.role="USER"; entities.persist(owner);
+        var waiting=repository(owner.id,10L); waiting.indexingStatus=IndexingStatus.FAILED;
+        waiting.lastIndexingErrorCategory=IndexingErrorCategory.RATE_LIMIT;
+        waiting.indexingTargetCommitSha="b".repeat(40); waiting.latestIndexedCommitSha="a".repeat(40);
+        var terminal=repository(owner.id,11L); terminal.indexingStatus=IndexingStatus.FAILED;
+        terminal.lastIndexingErrorCategory=IndexingErrorCategory.AUTHENTICATION;
+        terminal.indexingTargetCommitSha="b".repeat(40); entities.flush();
+        String migration;
+        try(var input=getClass().getResourceAsStream("/db/migration/V6__repository_index_retry.sql")) {
+            migration=new String(input.readAllBytes(),StandardCharsets.UTF_8);
+        }
+        entities.createNativeQuery(migration.substring(migration.indexOf("update repositories"))).executeUpdate(); entities.clear();
+        var recovered=entities.find(TrackedRepository.class,waiting.id);
+        assertEquals(IndexingStatus.WAITING_RETRY,recovered.indexingStatus);
+        assertNotNull(recovered.nextIndexingAttemptAt); assertEquals(1,recovered.indexingRetryCount);
+        assertEquals("a".repeat(40),recovered.latestIndexedCommitSha);
+        assertEquals("b".repeat(40),recovered.indexingTargetCommitSha);
+        assertEquals(IndexingStatus.FAILED,entities.find(TrackedRepository.class,terminal.id).indexingStatus);
+    }
+
     @Test @Transactional void historicalIndexesBackfillPerRepositoryWithDeterministicTies() throws Exception {
         var owner=new UserAccount();
         owner.email=UUID.randomUUID()+"@example.com"; owner.name="Migration test";

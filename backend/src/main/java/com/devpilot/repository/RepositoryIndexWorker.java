@@ -60,7 +60,7 @@ public class RepositoryIndexWorker {
             try { jobs.fail(job,failure); }
             catch (RuntimeException recordingFailure) { log.warn("Indexing failure recording failed repositoryId={} type={}",job.repositoryId(),recordingFailure.getClass().getSimpleName()); }
             if (failure instanceof EmbeddingFailure embedding)
-                log.warn("Repository indexing failed repositoryId={} {}",job.repositoryId(),embedding.diagnostic());
+                log.warn("Repository indexing attempt ended repositoryId={} {}",job.repositoryId(),embedding.diagnostic());
             else log.warn("Repository indexing failed repositoryId={} type={}",job.repositoryId(),failure.getClass().getSimpleName());
         } finally { SecurityContextHolder.clearContext(); active.remove(job.repositoryId(),job); }
     }

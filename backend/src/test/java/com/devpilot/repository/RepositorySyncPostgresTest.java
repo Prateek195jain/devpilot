@@ -19,7 +19,7 @@ class RepositorySyncPostgresTest extends RepositoryIndexingServiceTest {
         org.junit.jupiter.api.Assertions.assertTrue(chunks.search(repositoryId,owner,B,"test-model",vector,50).isEmpty());
         org.junit.jupiter.api.Assertions.assertEquals(1,chunks.search(repositoryId,owner,A,"test-model",vector,50).size());
         org.mockito.Mockito.doReturn(embedding()).when(embeddings).embedDocument(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyString());
-        sync.sync(repositoryId); run();
+        due(); run();
         var result=chunks.search(repositoryId,owner,B,"test-model",vector,50);
         org.junit.jupiter.api.Assertions.assertEquals(java.util.Set.of("one.java","a.java","z.java"),result.stream().map(RepositoryChunkMatch::sourcePath).collect(java.util.stream.Collectors.toSet()));
         org.junit.jupiter.api.Assertions.assertTrue(result.stream().allMatch(row -> B.equals(row.commitSha())));
