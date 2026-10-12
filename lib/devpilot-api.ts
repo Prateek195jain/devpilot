@@ -1,6 +1,6 @@
 export type User={id:string;name:string;email:string;role:string};
 export type Page<T>={content:T[];totalElements:number;totalPages:number;number:number};
-export type Repo={id:string;fullName:string;description:string;language:string;defaultBranch:string;syncedAt:string;latestIndexedCommitSha?:string|null;indexingStatus?:'NOT_INDEXED'|'INDEXING'|'READY'|'FAILED';indexingTargetCommitSha?:string|null;lastIndexingErrorCategory?:string|null};
+export type Repo={id:string;fullName:string;description:string;language:string;defaultBranch:string;syncedAt:string;latestIndexedCommitSha?:string|null;indexingStatus?:'NOT_INDEXED'|'INDEXING'|'WAITING_RETRY'|'READY'|'FAILED';indexingTargetCommitSha?:string|null;nextIndexingAttemptAt?:string|null;indexingRetryCount?:number;lastIndexingErrorCategory?:string|null};
 export type Analysis={id:string;kind:string;ref:string;status:string;source:string;summary:string;error:string;createdAt:string;attempts:number};
 export type Finding={id:string;analysisId:string;severity:string;type:string;title:string;description:string;file:string;line:number|null;recommendation:string;confidence:number;source:string};
 export type Debt={id:string;title:string;description:string;category:string;severity:string;status:string;estimatedEffort:string;createdAt:string};

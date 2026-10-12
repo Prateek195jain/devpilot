@@ -19,6 +19,7 @@ class RepositoryIndexingServiceTest extends RepositorySyncServiceTest {
         for(int count:new int[]{0,767,769}) {
             when(embeddings.embedDocument(anyString(),anyString())).thenReturn(new EmbeddingProvider.Embedding("test-model",768,Collections.nCopies(count,0.1)));
             assertThrows(EmbeddingFailure.class,() -> indexing.index(repositoryId,A)); assertNull(stored().latestIndexedCommitSha);
+            assertEquals(IndexingStatus.FAILED,stored().indexingStatus); assertNull(stored().nextIndexingAttemptAt);
         }
     }
     @Test void nonFiniteAndFloatOverflowVectorsFailWithoutPublication() {
@@ -49,7 +50,8 @@ class RepositoryIndexingServiceTest extends RepositorySyncServiceTest {
             assertEquals(3,requests.get()); assertEquals(3,failure.attempts()); assertNull(failure.getCause());
             assertFalse(failure.diagnostic().contains("test-only-key")); assertFalse(failure.diagnostic().contains("source"));
             assertEquals(A,stored().latestIndexedCommitSha); assertEquals(ids,rows(A).stream().map(row -> row.id).toList());
-            assertEquals(IndexingStatus.FAILED,stored().indexingStatus); assertTrue(rows(B).stream().noneMatch(row -> row.published));
+            assertEquals(IndexingStatus.WAITING_RETRY,stored().indexingStatus); assertNotNull(stored().nextIndexingAttemptAt);
+            assertTrue(rows(B).stream().noneMatch(row -> row.published));
         } finally { server.stop(0); }
     }
 }

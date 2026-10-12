@@ -269,7 +269,7 @@ for(const path of ['/repositories','/repositories/r/sync']) {
  });
 }
 
-for(const indexingStatus of ['INDEXING','FAILED']) {
+for(const indexingStatus of ['INDEXING','WAITING_RETRY','FAILED']) {
  test('chat continues using published SHA during '+indexingStatus,async()=>{
   const c=await client();const published='a'.repeat(40),target='b'.repeat(40);let body;
   global.fetch=async(url,opts)=>{if(opts.method==='GET')return response(200,{id:'r',latestIndexedCommitSha:published,indexingTargetCommitSha:target,indexingStatus});body=JSON.parse(opts.body);return response(200,[])};

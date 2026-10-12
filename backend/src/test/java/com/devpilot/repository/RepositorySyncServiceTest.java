@@ -157,12 +157,68 @@ class RepositorySyncServiceTest {
         ready(); snapshot(B,Map.of("a.java","added\n","z.java","failed\n")); target(B);
         when(embeddings.embedDocument(anyString(),anyString())).thenReturn(embedding()).thenThrow(new EmbeddingFailure(EmbeddingFailure.Kind.RATE_LIMIT));
         sync.sync(repositoryId); var oldIds=rows(A).stream().map(row -> row.id).toList();
-        assertThrows(EmbeddingFailure.class,this::run); assertEquals(IndexingStatus.FAILED,stored().indexingStatus);
+        assertThrows(EmbeddingFailure.class,this::run); assertEquals(IndexingStatus.WAITING_RETRY,stored().indexingStatus);
         assertEquals(IndexingErrorCategory.RATE_LIMIT,stored().lastIndexingErrorCategory); assertEquals(A,stored().latestIndexedCommitSha);
         assertEquals(oldIds,rows(A).stream().map(row -> row.id).toList()); assertEquals(1,rows(B).size()); assertFalse(rows(B).getFirst().published);
         doReturn(embedding()).when(embeddings).embedDocument(anyString(),anyString()); clearInvocations(embeddings);
-        sync.sync(repositoryId); run(); verify(embeddings,times(1)).embedDocument("z.java","failed\n");
+        var checkpoint=rows(B).getFirst();
+        assertNotNull(stored().nextIndexingAttemptAt); assertNull(stored().indexingJobToken); assertNull(stored().indexingLeaseUntil);
+        assertTrue(jobs.claim(repositoryId).isEmpty()); assertFalse(jobs.pending(10).contains(repositoryId));
+        sync.sync(repositoryId); assertEquals(IndexingStatus.WAITING_RETRY,stored().indexingStatus);
+        due(); run(); verify(embeddings,times(1)).embedDocument("z.java","failed\n");
+        assertEquals(checkpoint.id,rows(B).getFirst().id); assertArrayEquals(checkpoint.embedding,rows(B).getFirst().embedding);
+        assertNull(stored().nextIndexingAttemptAt); assertEquals(0,stored().indexingRetryCount);
         assertEquals(B,stored().latestIndexedCommitSha); assertTrue(rows(B).stream().allMatch(row -> row.published));
+    }
+    void due() {
+        transaction.executeWithoutResult(status -> repositories.lock(repositoryId).orElseThrow().nextIndexingAttemptAt=Instant.now().minusSeconds(1));
+    }
+    @Test void repeatedRateLimitsIncreasePersistedCooldownAndFenceOldAttempt() {
+        sync.sync(repositoryId); var first=claim(); jobs.fail(first,new EmbeddingFailure(EmbeddingFailure.Kind.RATE_LIMIT));
+        var retryAt=stored().nextIndexingAttemptAt;
+        assertEquals(1,stored().indexingRetryCount); assertNull(stored().latestIndexedCommitSha);
+        sync.sync(repositoryId); assertEquals(retryAt,stored().nextIndexingAttemptAt);
+        due(); assertTrue(jobs.pending(10).contains(repositoryId)); var second=claim();
+        assertNotEquals(first.token(),second.token()); assertTrue(jobs.claim(repositoryId).isEmpty());
+        jobs.fail(first,new EmbeddingFailure(EmbeddingFailure.Kind.RATE_LIMIT)); assertEquals(IndexingStatus.INDEXING,stored().indexingStatus);
+        jobs.fail(second,new EmbeddingFailure(EmbeddingFailure.Kind.RATE_LIMIT));
+        assertEquals(2,stored().indexingRetryCount);
+        assertTrue(stored().nextIndexingAttemptAt.isAfter(Instant.now().plusSeconds(590)));
+        assertEquals(300,jobs.cooldownSeconds(1,null)); assertEquals(600,jobs.cooldownSeconds(2,null));
+        assertEquals(1200,jobs.cooldownSeconds(3,null)); assertEquals(1800,jobs.cooldownSeconds(Integer.MAX_VALUE,null));
+        assertEquals(1000,jobs.cooldownSeconds(1,1000L)); assertEquals(1800,jobs.cooldownSeconds(1,Long.MAX_VALUE));
+    }
+    @Test void restartedWorkerAutomaticallyResumesDueCheckpointWithoutSync() throws Exception {
+        snapshot(A,Map.of("a.java","added\n","z.java","failed\n"));
+        when(embeddings.embedDocument(anyString(),anyString())).thenReturn(embedding()).thenThrow(new EmbeddingFailure(EmbeddingFailure.Kind.RATE_LIMIT));
+        sync.sync(repositoryId); assertThrows(EmbeddingFailure.class,this::run);
+        var checkpoint=rows(A).getFirst(); assertNull(stored().latestIndexedCommitSha);
+        doReturn(embedding()).when(embeddings).embedDocument(anyString(),anyString()); clearInvocations(embeddings);
+        var worker=new RepositoryIndexWorker(jobs,indexing,1);
+        try {
+            worker.tick(); verify(embeddings,never()).embedDocument(anyString(),anyString());
+            due(); worker.tick(); long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10);
+            while(stored().indexingStatus!=IndexingStatus.READY && System.nanoTime()<deadline) Thread.sleep(10);
+            assertEquals(IndexingStatus.READY,stored().indexingStatus); assertEquals(A,stored().latestIndexedCommitSha);
+            verify(embeddings,times(1)).embedDocument("z.java","failed\n"); assertEquals(checkpoint.id,rows(A).getFirst().id);
+        } finally { worker.stop(); }
+    }
+    @Test void newerWaitingTargetCoalescesAndReusesOldCandidate() {
+        snapshot(A,Map.of("a.java","added\n","z.java","failed\n")); sync.sync(repositoryId);
+        when(embeddings.embedDocument(anyString(),anyString())).thenReturn(embedding()).thenThrow(new EmbeddingFailure(EmbeddingFailure.Kind.RATE_LIMIT));
+        assertThrows(EmbeddingFailure.class,this::run);
+        snapshot(B,Map.of("a.java","added\n","b.java","new\n")); target(B); sync.sync(repositoryId);
+        assertEquals(IndexingStatus.INDEXING,stored().indexingStatus); assertNull(stored().nextIndexingAttemptAt); assertEquals(0,stored().indexingRetryCount);
+        doReturn(embedding()).when(embeddings).embedDocument(anyString(),anyString()); clearInvocations(embeddings); run();
+        verify(embeddings,times(1)).embedDocument("b.java","new\n"); assertEquals(B,stored().latestIndexedCommitSha);
+    }
+    @Test void deterministicEmbeddingFailuresNeverScheduleAutomaticRetry() {
+        for (var kind:List.of(EmbeddingFailure.Kind.AUTHENTICATION,EmbeddingFailure.Kind.CONFIGURATION,
+                EmbeddingFailure.Kind.INVALID_REQUEST,EmbeddingFailure.Kind.INVALID_RESPONSE)) {
+            sync.sync(repositoryId); jobs.fail(claim(),new EmbeddingFailure(kind));
+            assertEquals(IndexingStatus.FAILED,stored().indexingStatus); assertNull(stored().nextIndexingAttemptAt);
+            assertFalse(jobs.pending(10).contains(repositoryId)); assertTrue(jobs.claim(repositoryId).isEmpty());
+        }
     }
     @Test void firstFailureKeepsNullShaAndSafeCategory() {
         when(embeddings.embedDocument(anyString(),anyString())).thenThrow(new EmbeddingFailure(EmbeddingFailure.Kind.AUTHENTICATION));

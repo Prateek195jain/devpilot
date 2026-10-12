@@ -20,4 +20,6 @@ import com.devpilot.common.BaseEntity;
     public IndexingErrorCategory lastIndexingErrorCategory;
     @Column(name="indexing_job_token") public UUID indexingJobToken;
     @Column(name="indexing_lease_until") public Instant indexingLeaseUntil;
+    @Column(name="next_indexing_attempt_at") public Instant nextIndexingAttemptAt;
+    @Column(name="indexing_retry_count",nullable=false) public int indexingRetryCount;
 }
